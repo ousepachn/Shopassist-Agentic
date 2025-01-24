@@ -19,6 +19,23 @@ def main():
         print("Error: RAPIDAPI_KEY not found in .env file")
         return
 
+    # Check for Google Cloud credentials
+    google_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if not google_creds:
+        print("Error: GOOGLE_APPLICATION_CREDENTIALS not found in environment")
+        print("Please set up your Google Cloud credentials first:")
+        print("1. Go to Google Cloud Console > IAM & Admin > Service Accounts")
+        print("2. Create a service account or select existing one")
+        print("3. Create a new JSON key")
+        print(
+            "4. Set the path to the JSON file in GOOGLE_APPLICATION_CREDENTIALS environment variable"
+        )
+        return
+
+    if not os.path.exists(google_creds):
+        print(f"Error: Google Cloud credentials file not found at: {google_creds}")
+        return
+
     # Get username from user input
     username = get_user_input("Enter Instagram username", "ousepachn")
 
@@ -30,29 +47,24 @@ def main():
         print(f"Invalid number '{max_posts_str}', using default: 6")
         max_posts = 6
 
-    # Initialize scraper
+    # Initialize scraper with cloud storage
     scraper = InstagramScraper(api_key)
-
-    # Create project folder
-    project_folder = f"{username}_posts"
-    if not os.path.exists(project_folder):
-        os.makedirs(project_folder)
 
     # Get and display metadata
     print(f"\nFetching metadata for {max_posts} posts from {username}")
-    metadata_df = scraper.process_profile(username, project_folder, max_posts)
+    metadata_df = scraper.process_profile(username, max_posts)
 
     if metadata_df is not None:
         # Ask user if they want to download media
         download_choice = get_user_input(
-            "\nDo you want to download the media files? (yes/no)", "no"
+            "\nDo you want to download the media files to cloud storage? (yes/no)", "no"
         )
 
         if download_choice.lower() in ["y", "yes"]:
-            print("\nStarting media download...")
-            scraper.download_media_from_metadata(metadata_df, project_folder)
-            print("\nDownload completed!")
-            print(f"Check the '{project_folder}' directory for downloaded content")
+            print("\nStarting media upload to cloud storage...")
+            scraper.download_media_from_metadata(metadata_df, username)
+            print("\nUpload completed!")
+            print("Check the cloud storage bucket for uploaded content")
         else:
             print("\nSkipping media download.")
     else:
