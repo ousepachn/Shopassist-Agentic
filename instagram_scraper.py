@@ -5,6 +5,8 @@ import requests
 from typing import Dict, List, Optional
 import time
 from datetime import datetime
+import pandas as pd
+from tabulate import tabulate
 
 
 class InstagramScraper:
@@ -82,67 +84,128 @@ class InstagramScraper:
             print(f"[ERROR] Error type: {type(e).__name__}")
             return False
 
+    def extract_post_metadata(self, posts: List[Dict]) -> pd.DataFrame:
+        """Extract metadata from posts and create a DataFrame"""
+        metadata_list = []
+
+        for idx, post in enumerate(posts):
+            media_links = []
+
+            # Extract media links based on post type
+            if post.get("media_name") == "album" and "carousel_media" in post:
+                media_links = [
+                    item.get("thumbnail_url")
+                    for item in post["carousel_media"]
+                    if "thumbnail_url" in item
+                ]
+            elif post.get("media_name") == "post" and "thumbnail_url" in post:
+                media_links = [post["thumbnail_url"]]
+            elif "video_url" in post:
+                media_links = [post["video_url"]]
+
+            # Extract caption data
+            caption = post.get("caption", {})
+
+            # Get post code and create Instagram link
+            post_code = post.get("code", "")
+            post_link = f"www.instagram.com/p/{post_code}" if post_code else ""
+
+            metadata = {
+                "post_id": post_code,  # Using Instagram's code as post_id
+                "display_id": idx,  # Keeping the numerical index for display
+                "post_title": caption.get("text", ""),
+                "created_timestamp": caption.get("created_at_utc", ""),
+                "post_tags": ", ".join(caption.get("hashtags", [])),
+                "mentions": ", ".join(caption.get("mentions", [])),
+                "post_location": post.get("location", {}).get("name", ""),
+                "media_type": post.get("media_name", ""),
+                "media_links": media_links,
+                "post_link": post_link,
+            }
+            metadata_list.append(metadata)
+
+        return pd.DataFrame(metadata_list)
+
+    def display_metadata_table(self, df: pd.DataFrame) -> None:
+        """Display metadata table in a readable format"""
+        display_df = df.copy()
+        # Truncate long fields for display
+        display_df["post_title"] = display_df["post_title"].str[:50] + "..."
+        display_df["media_links"] = display_df["media_links"].apply(
+            lambda x: f"{len(x)} media items" if isinstance(x, list) else "1 media item"
+        )
+
+        # Reorder columns to show post_id and post_link at the beginning
+        columns_order = [
+            "display_id",
+            "post_id",
+            "post_link",
+            "post_title",
+            "created_timestamp",
+            "post_tags",
+            "mentions",
+            "post_location",
+            "media_type",
+            "media_links",
+        ]
+        display_df = display_df[columns_order]
+
+        print("\nPost Metadata:")
+        print(tabulate(display_df, headers="keys", tablefmt="grid", showindex=False))
+
+    def download_media_from_metadata(self, df: pd.DataFrame, output_dir: str) -> None:
+        """Download media using metadata DataFrame"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        profile_dir = os.path.join(output_dir, f"downloads_{timestamp}")
+        os.makedirs(profile_dir, exist_ok=True)
+
+        for _, row in df.iterrows():
+            try:
+                post_id = row["post_id"]
+                media_type = row["media_type"]
+                media_links = row["media_links"]
+
+                if media_type == "album":
+                    album_dir = os.path.join(profile_dir, f"post_{post_id}_album")
+                    os.makedirs(album_dir, exist_ok=True)
+                    for idx, url in enumerate(media_links):
+                        ext = url.split("?")[0].split(".")[-1]
+                        filename = f"image_{idx}.{ext}"
+                        filepath = os.path.join(album_dir, filename)
+                        self.download_media(url, filepath)
+                else:
+                    url = media_links[0]
+                    ext = url.split("?")[0].split(".")[-1]
+                    filename = f"post_{post_id}_{media_type}.{ext}"
+                    filepath = os.path.join(profile_dir, filename)
+                    self.download_media(url, filepath)
+
+                time.sleep(1)
+
+            except Exception as e:
+                print(f"Error downloading post {post_id}: {str(e)}")
+                continue
+
     def process_profile(
         self, username: str, output_dir: str = "downloads", max_posts: int = 50
-    ) -> None:
-        """Process posts for a given profile with pagination support"""
+    ) -> Optional[pd.DataFrame]:
+        """Process posts for a given profile and return metadata DataFrame"""
         try:
-            # Create output directory structure
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            profile_dir = os.path.join(output_dir, f"{username}_{timestamp}")
-            os.makedirs(profile_dir, exist_ok=True)
-
             # Fetch posts with pagination
             posts = self.get_user_posts(username, max_posts)
 
             if not posts:
                 print(f"No posts found for {username}")
-                return
+                return None
 
-            # Process each post
-            for idx, post in enumerate(posts):
-                try:
-                    if "media_name" in post:
-                        print(f"Media {idx}: {post['media_name']}")
+            # Create metadata DataFrame
+            metadata_df = self.extract_post_metadata(posts)
 
-                    # Handle carousel/album posts
-                    if post["media_name"] == "album" and "carousel_media" in post:
-                        # Create album directory
-                        album_dir = os.path.join(profile_dir, f"post_{idx}_album")
-                        os.makedirs(album_dir, exist_ok=True)
+            # Display metadata table
+            self.display_metadata_table(metadata_df)
 
-                        # Process each image in the carousel
-                        for carousel_idx, carousel_item in enumerate(
-                            post["carousel_media"]
-                        ):
-                            if "thumbnail_url" in carousel_item:
-                                url = carousel_item["thumbnail_url"]
-                                ext = url.split("?")[0].split(".")[-1]
-                                filename = f"image_{carousel_idx}.{ext}"
-                                filepath = os.path.join(album_dir, filename)
-                                self.download_media(url, filepath)
-
-                    # Handle single image posts
-                    elif post["media_name"] == "post" and "thumbnail_url" in post:
-                        url = post["thumbnail_url"]
-                        ext = url.split("?")[0].split(".")[-1]
-                        filename = f"post_{idx}_image.{ext}"
-                        filepath = os.path.join(profile_dir, filename)
-                        self.download_media(url, filepath)
-
-                    # Handle video posts
-                    elif "video_url" in post:
-                        url = post["video_url"]
-                        ext = url.split("?")[0].split(".")[-1]
-                        filename = f"post_{idx}_video.{ext}"
-                        filepath = os.path.join(profile_dir, filename)
-                        self.download_media(url, filepath)
-
-                    time.sleep(1)
-
-                except Exception as e:
-                    print(f"Error processing post {idx}: {str(e)}")
-                    continue
+            return metadata_df
 
         except Exception as e:
             print(f"Error: {str(e)}")
+            return None

@@ -38,17 +38,25 @@ def main():
     if not os.path.exists(project_folder):
         os.makedirs(project_folder)
 
-    # Start scraping
-    print(f"\nStarting to scrape {max_posts} posts for {username}")
-    try:
-        scraper.process_profile(
-            username, output_dir=project_folder, max_posts=max_posts
-        )
-    except Exception as e:
-        print(f"An error occurred: {str(e)}")
+    # Get and display metadata
+    print(f"\nFetching metadata for {max_posts} posts from {username}")
+    metadata_df = scraper.process_profile(username, project_folder, max_posts)
 
-    print("\nScraping completed!")
-    print(f"Check the '{project_folder}' directory for downloaded content")
+    if metadata_df is not None:
+        # Ask user if they want to download media
+        download_choice = get_user_input(
+            "\nDo you want to download the media files? (yes/no)", "no"
+        )
+
+        if download_choice.lower() in ["y", "yes"]:
+            print("\nStarting media download...")
+            scraper.download_media_from_metadata(metadata_df, project_folder)
+            print("\nDownload completed!")
+            print(f"Check the '{project_folder}' directory for downloaded content")
+        else:
+            print("\nSkipping media download.")
+    else:
+        print("No metadata available for download.")
 
 
 if __name__ == "__main__":
