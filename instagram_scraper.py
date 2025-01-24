@@ -9,6 +9,7 @@ import pandas as pd
 from tabulate import tabulate
 from google.cloud import storage
 import io
+from media_processor import MediaProcessor
 
 
 class CloudStorageHandler:
@@ -54,13 +55,18 @@ class CloudStorageHandler:
 
 class InstagramScraper:
     def __init__(
-        self, api_key: str, bucket_name: str = "shopassist-agentic-media-data"
+        self,
+        api_key: str,
+        bucket_name: str = "shopassist-agentic-media-data",
+        project_id: str = "shopassist-agentic",
     ):
         """Initialize the scraper with RapidAPI key and GCS bucket"""
         self.api_key = api_key
         self.base_url = "instagram-scraper-api2.p.rapidapi.com"
         self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": self.base_url}
         self.cloud_storage = CloudStorageHandler(bucket_name)
+        self.media_processor = MediaProcessor(project_id)
+        self.bucket_name = bucket_name
 
     def get_user_posts(self, username: str, max_posts: int = 50) -> List[Dict]:
         """Fetch posts for a given username with pagination support"""
@@ -257,6 +263,17 @@ class InstagramScraper:
                     "post_link": post_link,
                     "gcs_location": gcs_location,
                     "last_scraped": now,
+                    "ai_content_description": "",  # Will be filled when AI processing is run
+                    "ai_analysis_results": {  # Default structure for AI analysis results
+                        "description": "",
+                        "style": "",
+                        "text": "",
+                        "safety": "",
+                        "dialogue": "",
+                        "scenes": "",
+                        "album_images": [],  # For storing album image analysis results
+                    },
+                    "ai_processed_time": None,  # Timestamp when AI processing was completed
                 }
                 metadata_list.append(metadata)
 
@@ -276,6 +293,134 @@ class InstagramScraper:
 
         return new_metadata_df
 
+    def process_media_content(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process media content using Vertex AI and update metadata"""
+        processed_count = 0
+        skipped_count = 0
+
+        for idx, row in df.iterrows():
+            try:
+                # Only process if not already processed or if ai_content_description is empty
+                if (
+                    pd.isna(row["ai_processed_time"])
+                    or not row["ai_content_description"]
+                ):
+                    if not row["gcs_location"]:
+                        print(
+                            f"[WARNING] Skipping post {row['post_id']}: No media file in cloud storage"
+                        )
+                        skipped_count += 1
+                        continue
+
+                    gcs_uri = f"gs://{self.bucket_name}/{row['gcs_location']}"
+                    print(
+                        f"\n[INFO] Processing {row['media_type']} content for post {row['post_id']}"
+                    )
+
+                    # Determine media type and process accordingly
+                    if row["media_type"] in ["post", "image"]:
+                        analysis_results = self.media_processor.process_image(gcs_uri)
+                        # Ensure consistent structure
+                        analysis_results = {
+                            "description": analysis_results.get("description", ""),
+                            "style": analysis_results.get("style", ""),
+                            "text": analysis_results.get("text", ""),
+                            "safety": analysis_results.get("safety", ""),
+                            "dialogue": "",
+                            "scenes": "",
+                            "album_images": [],
+                        }
+                        content_description = (
+                            self.media_processor.generate_content_description(
+                                analysis_results, "image"
+                            )
+                        )
+                    elif row["media_type"] in ["reel", "video"]:
+                        analysis_results = self.media_processor.process_video(gcs_uri)
+                        # Ensure consistent structure
+                        analysis_results = {
+                            "description": analysis_results.get("description", ""),
+                            "style": "",
+                            "text": "",
+                            "safety": analysis_results.get("safety", ""),
+                            "dialogue": analysis_results.get("dialogue", ""),
+                            "scenes": analysis_results.get("scenes", ""),
+                            "album_images": [],
+                        }
+                        content_description = (
+                            self.media_processor.generate_content_description(
+                                analysis_results, "video"
+                            )
+                        )
+                    elif row["media_type"] == "album":
+                        # Process each image in the album
+                        album_results = []
+                        album_descriptions = []
+                        for i in range(len(row["media_links"])):
+                            album_gcs_uri = f"{gcs_uri}/image_{i}.jpg"
+                            image_results = self.media_processor.process_image(
+                                album_gcs_uri
+                            )
+                            # Ensure consistent structure for each album image
+                            image_results = {
+                                "description": image_results.get("description", ""),
+                                "style": image_results.get("style", ""),
+                                "text": image_results.get("text", ""),
+                                "safety": image_results.get("safety", ""),
+                                "dialogue": "",
+                                "scenes": "",
+                                "album_images": [],
+                            }
+                            album_results.append(image_results)
+                            image_description = (
+                                self.media_processor.generate_content_description(
+                                    image_results, "image"
+                                )
+                            )
+                            album_descriptions.append(
+                                f"Image {i + 1}: {image_description}"
+                            )
+
+                        analysis_results = {
+                            "description": "",
+                            "style": "",
+                            "text": "",
+                            "safety": "",
+                            "dialogue": "",
+                            "scenes": "",
+                            "album_images": album_results,
+                        }
+                        content_description = "\n".join(album_descriptions)
+                    else:
+                        print(
+                            f"[WARNING] Skipping unknown media type: {row['media_type']}"
+                        )
+                        skipped_count += 1
+                        continue
+
+                    # Update DataFrame with AI analysis results and timestamp
+                    df.at[idx, "ai_analysis_results"] = analysis_results
+                    df.at[idx, "ai_content_description"] = content_description
+                    df.at[idx, "ai_processed_time"] = datetime.now().timestamp()
+                    processed_count += 1
+
+                    print(f"[INFO] Content Description: {content_description[:200]}...")
+                    time.sleep(1)  # Rate limiting
+                else:
+                    skipped_count += 1
+
+            except Exception as e:
+                print(
+                    f"[ERROR] Failed to process media for post {row['post_id']}: {str(e)}"
+                )
+                skipped_count += 1
+                continue
+
+        print(
+            f"\n[SUMMARY] Processed {processed_count} items, Skipped {skipped_count} items"
+        )
+        return df
+
     def display_metadata_table(self, df: pd.DataFrame) -> None:
         """Display metadata table in a readable format"""
         display_df = df.copy()
@@ -285,6 +430,9 @@ class InstagramScraper:
             lambda x: f"{len(x)} media items" if isinstance(x, list) else "1 media item"
         )
         display_df["gcs_location"] = display_df["gcs_location"].str[:50] + "..."
+        display_df["ai_content_description"] = (
+            display_df["ai_content_description"].str[:100] + "..."
+        )
 
         # Reorder columns to show post_id and post_link at the beginning
         columns_order = [
@@ -299,6 +447,8 @@ class InstagramScraper:
             "media_type",
             "media_links",
             "gcs_location",
+            "ai_content_description",
+            "ai_processed_time",
             "last_scraped",
         ]
         display_df = display_df[columns_order]
@@ -375,15 +525,89 @@ class InstagramScraper:
                 print("No new posts to add to metadata")
                 return existing_metadata
 
-            # Display metadata table
+            # Display initial metadata table
+            print("\nInitial metadata (before AI processing):")
             self.display_metadata_table(metadata_df)
 
-            # Save metadata as parquet in cloud storage
+            # Save initial metadata
             self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
-            print(f"\nMetadata saved to cloud storage: {metadata_path}")
+            print(f"\nInitial metadata saved to cloud storage: {metadata_path}")
+
+            # Download media files
+            print("\nDownloading media files to cloud storage...")
+            self.download_media_from_metadata(metadata_df, username)
+            print("Media download completed")
+
+            # Ask user if they want to proceed with AI processing
+            process_ai = input(
+                "\nDo you want to process media with Vertex AI? (yes/no): "
+            ).lower()
+            if process_ai in ["y", "yes"]:
+                print("\nProcessing media content with Vertex AI...")
+                metadata_df = self.process_media_content(metadata_df)
+
+                # Display updated metadata table
+                print("\nUpdated metadata (after AI processing):")
+                self.display_metadata_table(metadata_df)
+
+                # Save updated metadata
+                self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
+                print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
 
             return metadata_df
 
         except Exception as e:
             print(f"Error: {str(e)}")
+            return None
+
+    def run_ai_processing(self, username: str) -> Optional[pd.DataFrame]:
+        """Run AI processing pipeline independently on existing metadata
+
+        This method allows running the AI processing pipeline separately from the scraping pipeline.
+        It will process any media items that don't have AI content descriptions yet.
+        """
+        try:
+            # Load existing metadata
+            metadata_path = f"instagram/{username}/metadata.parquet"
+            metadata_df = self.cloud_storage.download_dataframe(metadata_path)
+
+            if metadata_df is None or metadata_df.empty:
+                print(f"[ERROR] No metadata found for user {username}")
+                return None
+
+            # Count items needing processing
+            unprocessed_items = metadata_df[
+                metadata_df["ai_content_description"].isna()
+                | (metadata_df["ai_content_description"] == "")
+            ]
+            total_items = len(metadata_df)
+            items_to_process = len(unprocessed_items)
+
+            print(f"\nFound {total_items} total items in metadata")
+            print(f"Items needing AI processing: {items_to_process}")
+
+            if items_to_process == 0:
+                print("All items have already been processed by AI")
+                return metadata_df
+
+            # Ask for confirmation
+            process_ai = input(
+                f"\nDo you want to process {items_to_process} items with Vertex AI? (yes/no): "
+            ).lower()
+            if process_ai in ["y", "yes"]:
+                print("\nProcessing media content with Vertex AI...")
+                metadata_df = self.process_media_content(metadata_df)
+
+                # Display updated metadata table
+                print("\nUpdated metadata (after AI processing):")
+                self.display_metadata_table(metadata_df)
+
+                # Save updated metadata
+                self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
+                print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
+
+            return metadata_df
+
+        except Exception as e:
+            print(f"[ERROR] Failed to run AI processing: {str(e)}")
             return None
