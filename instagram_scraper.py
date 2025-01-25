@@ -10,6 +10,7 @@ from tabulate import tabulate
 from google.cloud import storage
 import io
 from media_processor import MediaProcessor
+from image_processor import ImageGridProcessor
 
 
 class CloudStorageHandler:
@@ -65,7 +66,8 @@ class InstagramScraper:
         self.base_url = "instagram-scraper-api2.p.rapidapi.com"
         self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": self.base_url}
         self.cloud_storage = CloudStorageHandler(bucket_name)
-        self.media_processor = MediaProcessor(project_id)
+        self.media_processor = MediaProcessor(project_id, bucket_name)
+        self.image_processor = ImageGridProcessor(bucket_name)
         self.bucket_name = bucket_name
 
     def get_user_posts(self, username: str, max_posts: int = 50) -> List[Dict]:
@@ -353,44 +355,41 @@ class InstagramScraper:
                             )
                         )
                     elif row["media_type"] == "album":
-                        # Process each image in the album
-                        album_results = []
-                        album_descriptions = []
-                        for i in range(len(row["media_links"])):
-                            album_gcs_uri = f"{gcs_uri}/image_{i}.jpg"
-                            image_results = self.media_processor.process_image(
-                                album_gcs_uri
-                            )
-                            # Ensure consistent structure for each album image
-                            image_results = {
-                                "description": image_results.get("description", ""),
-                                "style": image_results.get("style", ""),
-                                "text": image_results.get("text", ""),
-                                "safety": image_results.get("safety", ""),
-                                "dialogue": "",
-                                "scenes": "",
-                                "album_images": [],
-                            }
-                            album_results.append(image_results)
-                            image_description = (
-                                self.media_processor.generate_content_description(
-                                    image_results, "image"
-                                )
-                            )
-                            album_descriptions.append(
-                                f"Image {i + 1}: {image_description}"
-                            )
+                        # Create grid images first
+                        grid_base_path = f"{row['gcs_location']}/grids"
+                        grid_paths = self.image_processor.process_album_images(
+                            row["gcs_location"], len(row["media_links"]), grid_base_path
+                        )
 
+                        # Get album context from post title
+                        album_context = row["post_title"]
+
+                        # Process all grid images together
+                        grid_uris = [
+                            f"gs://{self.bucket_name}/{path}" for path in grid_paths
+                        ]
+
+                        # Process first image with additional images
+                        grid_results = self.media_processor.process_image(
+                            grid_uris[0],
+                            is_album=True,
+                            album_context=album_context,
+                            additional_images=grid_uris[1:]
+                            if len(grid_uris) > 1
+                            else None,
+                        )
+
+                        # Create final analysis results
                         analysis_results = {
-                            "description": "",
-                            "style": "",
-                            "text": "",
-                            "safety": "",
+                            "description": grid_results.get("description", ""),
+                            "style": grid_results.get("style", ""),
+                            "text": grid_results.get("text", ""),
+                            "safety": grid_results.get("safety", ""),
                             "dialogue": "",
                             "scenes": "",
-                            "album_images": album_results,
+                            "album_images": [grid_results],  # Keep for compatibility
                         }
-                        content_description = "\n".join(album_descriptions)
+                        content_description = grid_results.get("description", "")
                     else:
                         print(
                             f"[WARNING] Skipping unknown media type: {row['media_type']}"
@@ -564,7 +563,10 @@ class InstagramScraper:
         """Run AI processing pipeline independently on existing metadata
 
         This method allows running the AI processing pipeline separately from the scraping pipeline.
-        It will process any media items that don't have AI content descriptions yet.
+        It provides three options:
+        1. Update all - Process all items regardless of previous processing
+        2. Update remaining - Process only items that haven't been processed yet
+        3. Don't update - Skip processing
         """
         try:
             # Load existing metadata
@@ -584,27 +586,45 @@ class InstagramScraper:
             items_to_process = len(unprocessed_items)
 
             print(f"\nFound {total_items} total items in metadata")
-            print(f"Items needing AI processing: {items_to_process}")
+            print(f"Items not yet processed: {items_to_process}")
 
-            if items_to_process == 0:
-                print("All items have already been processed by AI")
+            # Ask for processing option
+            while True:
+                print("\nChoose processing option:")
+                print("1. Update all - Process all items")
+                print("2. Update remaining - Process only unprocessed items")
+                print("3. Don't update - Skip processing")
+                choice = input("Enter choice (1/2/3): ").strip()
+
+                if choice in ["1", "2", "3"]:
+                    break
+                print("Invalid choice. Please enter 1, 2, or 3.")
+
+            if choice == "3":
+                print("Skipping AI processing.")
                 return metadata_df
 
-            # Ask for confirmation
-            process_ai = input(
-                f"\nDo you want to process {items_to_process} items with Vertex AI? (yes/no): "
-            ).lower()
-            if process_ai in ["y", "yes"]:
-                print("\nProcessing media content with Vertex AI...")
-                metadata_df = self.process_media_content(metadata_df)
+            if choice == "1":
+                # Reset AI processing flags to process all items
+                metadata_df["ai_content_description"] = ""
+                metadata_df["ai_processed_time"] = None
+                print(f"\nProcessing all {total_items} items...")
+            else:  # choice == "2"
+                if items_to_process == 0:
+                    print("No items need processing.")
+                    return metadata_df
+                print(f"\nProcessing {items_to_process} remaining items...")
 
-                # Display updated metadata table
-                print("\nUpdated metadata (after AI processing):")
-                self.display_metadata_table(metadata_df)
+            # Process the items
+            metadata_df = self.process_media_content(metadata_df)
 
-                # Save updated metadata
-                self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
-                print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
+            # Display updated metadata table
+            print("\nUpdated metadata (after AI processing):")
+            self.display_metadata_table(metadata_df)
+
+            # Save updated metadata
+            self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
+            print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
 
             return metadata_df
 

@@ -6,4 +6,6 @@ google-cloud-storage>=2.14.0
 pyarrow>=14.0.1  # for parquet support
 google-cloud-aiplatform>=1.64.0  # for Vertex AI
 google-cloud-vision>=3.5.0  # for Vision API
-google-cloud-videointelligence>=2.11.0  # for Video Intelligence API 
+google-cloud-videointelligence>=2.11.0  # for Video Intelligence API
+Pillow>=10.0.0  # for image processing 
+python-ffmpeg>=2.0.0  # for video preprocessing 
