@@ -11,6 +11,7 @@ from google.cloud import storage
 import io
 from media_processor import MediaProcessor
 from image_processor import ImageGridProcessor
+import numpy as np
 
 
 class CloudStorageHandler:
@@ -60,6 +61,7 @@ class InstagramScraper:
         api_key: str,
         bucket_name: str = "shopassist-agentic-media-data",
         project_id: str = "shopassist-agentic",
+        auto_process_with_vertex: bool = False,
     ):
         """Initialize the scraper with RapidAPI key and GCS bucket"""
         self.api_key = api_key
@@ -69,6 +71,7 @@ class InstagramScraper:
         self.media_processor = MediaProcessor(project_id, bucket_name)
         self.image_processor = ImageGridProcessor(bucket_name)
         self.bucket_name = bucket_name
+        self.auto_process_with_vertex = auto_process_with_vertex
 
     def get_user_posts(self, username: str, max_posts: int = 50) -> List[Dict]:
         """Fetch posts for a given username with pagination support"""
@@ -166,132 +169,124 @@ class InstagramScraper:
         username: str,
         existing_metadata: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
-        """Extract metadata from posts and create a DataFrame"""
-        metadata_list = []
-        now = datetime.now().timestamp()
+        """Extract metadata from posts and return as DataFrame"""
+        metadata = []
+        for post in posts:
+            # Extract basic post information
+            post_id = post.get("code", "")  # Instagram post code
+            caption_data = post.get("caption", {})
+            caption_text = (
+                caption_data.get("text", "")
+                if isinstance(caption_data, dict)
+                else str(caption_data)
+            )
+            timestamp = post.get("taken_at_timestamp", "")
 
-        if not posts:
-            print("[ERROR] No posts provided to extract metadata from")
-            return pd.DataFrame()
-
-        # Create set of existing post IDs
-        existing_post_ids = set()
-        if existing_metadata is not None and not existing_metadata.empty:
-            existing_post_ids = set(existing_metadata["post_id"].values)
-
-        for idx, post in enumerate(posts):
-            try:
-                # Get post code early to check if we should skip
-                post_code = post.get("code", "")
-                if post_code in existing_post_ids:
-                    print(f"[DEBUG] Skipping existing post {post_code}")
-                    continue
-
-                print(f"\n[DEBUG] Processing post {idx + 1}/{len(posts)}")
-
-                # Extract media type and links
-                media_type = post.get("media_name", "unknown")
-                print(f"[DEBUG] Post type: {media_type}")
-                media_links = []
-
-                if media_type == "album" and post.get("carousel_media"):
-                    media_links = [
-                        item.get("thumbnail_url")
-                        or item.get("image_versions", {})
-                        .get("items", [{}])[0]
-                        .get("url")
-                        for item in post["carousel_media"]
-                        if item.get("thumbnail_url")
-                        or item.get("image_versions", {}).get("items")
-                    ]
-                    print(f"[DEBUG] Found {len(media_links)} images in album")
-                elif media_type == "post" or media_type == "image":
-                    media_links = [
-                        post.get("thumbnail_url")
-                        or post.get("image_versions", {})
-                        .get("items", [{}])[0]
-                        .get("url")
-                    ]
-                    print("[DEBUG] Found single image post")
-                elif post.get("video_url"):
-                    media_links = [post["video_url"]]
-                    print("[DEBUG] Found video post")
+            # Determine media type and extract media URLs
+            media_type = post.get("media_type", "")
+            if not media_type:
+                if post.get("is_video", False):
+                    media_type = "video"
+                elif post.get("carousel_media"):
+                    media_type = "album"
                 else:
-                    print(
-                        f"[WARNING] Unknown post type or no media found. Post keys: {post.keys()}"
-                    )
-                    media_links = []
+                    media_type = "image"
 
-                # Extract caption data safely
-                caption = (
-                    post.get("caption", {})
-                    if isinstance(post.get("caption"), dict)
-                    else {}
-                )
-
-                # Get post code and create Instagram link
-                post_link = f"www.instagram.com/p/{post_code}" if post_code else ""
-
-                # Extract location data safely
-                location = post.get("location", {})
-                location_name = (
-                    location.get("name", "") if isinstance(location, dict) else ""
-                )
-
-                # Determine GCS location based on media type
-                if media_links:
-                    if media_type == "album":
-                        gcs_location = (
-                            f"instagram/{username}/media/post_{post_code}_album"
-                        )
+            # Extract media URLs based on type
+            media_urls = []
+            if media_type == "album" and post.get("carousel_media"):
+                for item in post["carousel_media"]:
+                    if item.get("video_versions"):
+                        url = item["video_versions"][0].get("url", "")
                     else:
-                        ext = media_links[0].split("?")[0].split(".")[-1]
-                        gcs_location = f"instagram/{username}/media/post_{post_code}_{media_type}.{ext}"
-                else:
-                    gcs_location = ""
+                        url = (
+                            item.get("image_versions2", {})
+                            .get("candidates", [{}])[0]
+                            .get("url", "")
+                        )
+                    if url:
+                        media_urls.append(url)
+            elif media_type == "video" or post.get("is_video", False):
+                if post.get("video_versions"):
+                    url = post["video_versions"][0].get("url", "")
+                    if url:
+                        media_urls.append(url)
+            else:  # Single image
+                url = (
+                    post.get("image_versions2", {})
+                    .get("candidates", [{}])[0]
+                    .get("url", "")
+                )
+                if url:
+                    media_urls.append(url)
 
-                metadata = {
-                    "post_id": post_code,  # Using Instagram's code as post_id
-                    "display_id": idx,  # Keeping the numerical index for display
-                    "post_title": caption.get("text", "")[:100] + "..."
-                    if caption.get("text", "")
-                    else "",
-                    "created_timestamp": caption.get("created_at_utc", ""),
-                    "post_tags": ", ".join(caption.get("hashtags", [])),
-                    "mentions": ", ".join(caption.get("mentions", [])),
-                    "post_location": location_name,
-                    "media_type": media_type,
-                    "media_links": media_links,
-                    "post_link": post_link,
-                    "gcs_location": gcs_location,
-                    "last_scraped": now,
-                    "ai_content_description": "",  # Will be filled when AI processing is run
-                    "ai_analysis_results": {  # Default structure for AI analysis results
-                        "description": "",
-                        "style": "",
-                        "text": "",
-                        "safety": "",
-                        "dialogue": "",
-                        "scenes": "",
-                        "album_images": [],  # For storing album image analysis results
-                    },
-                    "ai_processed_time": None,  # Timestamp when AI processing was completed
-                }
-                metadata_list.append(metadata)
+            # If no URLs found, try alternate fields
+            if not media_urls:
+                if post.get("video_url"):
+                    media_urls.append(post["video_url"])
+                elif post.get("thumbnail_url"):
+                    media_urls.append(post["thumbnail_url"])
+                elif post.get("display_url"):
+                    media_urls.append(post["display_url"])
 
-            except Exception as e:
-                print(f"[ERROR] Failed to process post {idx}: {str(e)}")
-                print(f"[ERROR] Post data: {post}")
-                continue
+            print(f"[DEBUG] Found {len(media_urls)} media URLs for post {post_id}")
 
-        # Create DataFrame from new posts
-        new_metadata_df = (
-            pd.DataFrame(metadata_list) if metadata_list else pd.DataFrame()
-        )
+            # Generate GCS location
+            base_cloud_path = f"instagram/{username}/media"
+            if media_type == "album":
+                gcs_location = f"{base_cloud_path}/post_{post_id}_album"
+            else:
+                ext = media_urls[0].split("?")[0].split(".")[-1] if media_urls else ""
+                gcs_location = (
+                    f"{base_cloud_path}/post_{post_id}_{media_type}.{ext}"
+                    if ext
+                    else ""
+                )
 
-        # Combine with existing metadata if available
-        if existing_metadata is not None and not existing_metadata.empty:
-            return pd.concat([existing_metadata, new_metadata_df], ignore_index=True)
+            post_data = {
+                "username": username,
+                "post_id": post_id,
+                "caption": caption_text,
+                "timestamp": timestamp,
+                "media_type": media_type,
+                "like_count": post.get("like_count", 0),
+                "comment_count": post.get("comment_count", 0),
+                "media_urls": media_urls,
+                "processed": False,
+                "vertex_ai_labels": [],
+                "vertex_ai_objects": [],
+                "vertex_ai_text": "",
+                "error": "",
+                "gcs_location": gcs_location,
+                "ai_content_description": "",
+                "ai_processed_time": None,
+            }
+            metadata.append(post_data)
+
+        new_metadata_df = pd.DataFrame(metadata)
+
+        # Convert any remaining NumPy arrays to Python lists
+        for column in new_metadata_df.columns:
+            if len(new_metadata_df) > 0 and isinstance(
+                new_metadata_df[column].iloc[0], np.ndarray
+            ):
+                new_metadata_df[column] = new_metadata_df[column].apply(
+                    lambda x: x.tolist() if isinstance(x, np.ndarray) else x
+                )
+
+        if existing_metadata is not None:
+            # Only add new posts that aren't in existing metadata
+            existing_post_ids = set(existing_metadata["post_id"])
+            new_metadata_df = new_metadata_df[
+                ~new_metadata_df["post_id"].isin(existing_post_ids)
+            ]
+
+            if not new_metadata_df.empty:
+                new_metadata_df = pd.concat(
+                    [existing_metadata, new_metadata_df], ignore_index=True
+                )
+            else:
+                new_metadata_df = existing_metadata
 
         return new_metadata_df
 
@@ -358,11 +353,11 @@ class InstagramScraper:
                         # Create grid images first
                         grid_base_path = f"{row['gcs_location']}/grids"
                         grid_paths = self.image_processor.process_album_images(
-                            row["gcs_location"], len(row["media_links"]), grid_base_path
+                            row["gcs_location"], len(row["media_urls"]), grid_base_path
                         )
 
                         # Get album context from post title
-                        album_context = row["post_title"]
+                        album_context = row["caption"]
 
                         # Process all grid images together
                         grid_uris = [
@@ -423,32 +418,47 @@ class InstagramScraper:
     def display_metadata_table(self, df: pd.DataFrame) -> None:
         """Display metadata table in a readable format"""
         display_df = df.copy()
-        # Truncate long fields for display
-        display_df["post_title"] = display_df["post_title"].str[:50] + "..."
-        display_df["media_links"] = display_df["media_links"].apply(
+
+        # Safely truncate string fields and handle non-string values
+        def safe_truncate(value, max_length=50):
+            if pd.isna(value):
+                return ""
+            str_value = str(value)
+            return (
+                str_value[:max_length] + "..."
+                if len(str_value) > max_length
+                else str_value
+            )
+
+        # Truncate long fields for display with safe handling
+        display_df["caption"] = display_df["caption"].apply(safe_truncate)
+        display_df["media_urls"] = display_df["media_urls"].apply(
             lambda x: f"{len(x)} media items" if isinstance(x, list) else "1 media item"
         )
-        display_df["gcs_location"] = display_df["gcs_location"].str[:50] + "..."
-        display_df["ai_content_description"] = (
-            display_df["ai_content_description"].str[:100] + "..."
+        display_df["gcs_location"] = display_df["gcs_location"].apply(
+            lambda x: safe_truncate(x) if x else ""
         )
+        display_df["ai_content_description"] = display_df[
+            "ai_content_description"
+        ].apply(lambda x: safe_truncate(x, 100) if x else "")
 
         # Reorder columns to show post_id and post_link at the beginning
         columns_order = [
-            "display_id",
             "post_id",
-            "post_link",
-            "post_title",
-            "created_timestamp",
-            "post_tags",
-            "mentions",
-            "post_location",
+            "caption",
+            "timestamp",
             "media_type",
-            "media_links",
-            "gcs_location",
+            "like_count",
+            "comment_count",
+            "media_urls",
+            "processed",
+            "vertex_ai_labels",
+            "vertex_ai_objects",
+            "vertex_ai_text",
+            "error",
             "ai_content_description",
             "ai_processed_time",
-            "last_scraped",
+            "gcs_location",
         ]
         display_df = display_df[columns_order]
 
@@ -463,10 +473,21 @@ class InstagramScraper:
             try:
                 post_id = row["post_id"]
                 media_type = row["media_type"]
-                media_links = row["media_links"]
+                media_urls = row["media_urls"]
+
+                if not media_urls:
+                    print(
+                        f"[WARNING] No media URLs found for post {post_id}, skipping..."
+                    )
+                    continue
 
                 if media_type == "album":
-                    for idx, url in enumerate(media_links):
+                    for idx, url in enumerate(media_urls):
+                        if not url:
+                            print(
+                                f"[WARNING] Empty URL in album for post {post_id} at index {idx}"
+                            )
+                            continue
                         ext = url.split("?")[0].split(".")[-1]
                         cloud_path = (
                             f"{base_cloud_path}/post_{post_id}_album/image_{idx}.{ext}"
@@ -479,7 +500,10 @@ class InstagramScraper:
                             continue
                         self.download_media(url, cloud_path)
                 else:
-                    url = media_links[0]
+                    if not media_urls[0]:
+                        print(f"[WARNING] Empty URL for post {post_id}")
+                        continue
+                    url = media_urls[0]
                     ext = url.split("?")[0].split(".")[-1]
                     cloud_path = f"{base_cloud_path}/post_{post_id}_{media_type}.{ext}"
                     # Check if file already exists
@@ -490,10 +514,13 @@ class InstagramScraper:
                         continue
                     self.download_media(url, cloud_path)
 
-                time.sleep(1)
+                time.sleep(1)  # Rate limiting
 
+            except IndexError as e:
+                print(f"[ERROR] No valid media URLs for post {post_id}: {str(e)}")
+                continue
             except Exception as e:
-                print(f"Error downloading post {post_id}: {str(e)}")
+                print(f"[ERROR] Failed to download post {post_id}: {str(e)}")
                 continue
 
     def process_profile(
@@ -537,11 +564,8 @@ class InstagramScraper:
             self.download_media_from_metadata(metadata_df, username)
             print("Media download completed")
 
-            # Ask user if they want to proceed with AI processing
-            process_ai = input(
-                "\nDo you want to process media with Vertex AI? (yes/no): "
-            ).lower()
-            if process_ai in ["y", "yes"]:
+            # Process with Vertex AI based on initialization parameter
+            if self.auto_process_with_vertex:
                 print("\nProcessing media content with Vertex AI...")
                 metadata_df = self.process_media_content(metadata_df)
 
