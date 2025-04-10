@@ -6,9 +6,39 @@ venv/
 .DS_Store
 *.json
 !package.json
+!package-lock.json
+!tsconfig.json
 *.key
 *.pem
 *.p12
 *.log
 .vscode/
 .idea/ 
+service-account.json 
+node_modules/
+
+# Next.js
+.next/
+out/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Testing
+coverage/
+.pytest_cache/
+
+# Build
+dist/
+build/
+
+# Temporary files
+*.swp
+*.swo
+*~
+
+# Data files
+instagram/
+data/
+*.parquet
