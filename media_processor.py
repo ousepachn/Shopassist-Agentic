@@ -164,7 +164,6 @@ Please also describe:
         try:
             # Extract paths
             gcs_path = gcs_uri.replace(f"gs://{self.bucket_name}/", "")
-            processed_gcs_path = f"{os.path.splitext(gcs_path)[0]}_processed.mp4"
 
             # Create temporary files
             with (
@@ -182,15 +181,9 @@ Please also describe:
                 ):
                     raise Exception("Video preprocessing failed")
 
-                # Upload processed video
-                print("[INFO] Uploading processed video to GCS...")
-                self.video_processor.upload_video_to_gcs(
-                    output_temp.name, processed_gcs_path
-                )
-
                 # Create video part for Gemini
                 video = Part.from_uri(
-                    f"gs://{self.bucket_name}/{processed_gcs_path}",
+                    gcs_uri,
                     mime_type="video/mp4",
                 )
 

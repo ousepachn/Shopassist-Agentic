@@ -3,6 +3,9 @@ import io
 import math
 from typing import List, Tuple
 from google.cloud import storage
+import tempfile
+import os
+import subprocess
 
 
 class ImageGridProcessor:
@@ -88,6 +91,60 @@ class ImageGridProcessor:
 
         return grid_image
 
+    def extract_video_frames(
+        self, video_path: str, output_dir: str, interval: int = 2
+    ) -> List[str]:
+        """Extract frames from a video at specified intervals.
+
+        Args:
+            video_path: GCS path to the video
+            output_dir: GCS path where to save the frames
+            interval: Interval in seconds between frames
+
+        Returns:
+            List of GCS paths to the extracted frames
+        """
+        try:
+            # Download video to temporary file
+            with tempfile.NamedTemporaryFile(suffix=".mp4") as temp_video:
+                blob = self.bucket.blob(video_path)
+                blob.download_to_filename(temp_video.name)
+
+                # Create temporary directory for frames
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Extract frames using ffmpeg
+                    frame_pattern = os.path.join(temp_dir, "frame_%d.jpg")
+                    command = [
+                        "ffmpeg",
+                        "-i",
+                        temp_video.name,
+                        "-vf",
+                        f"fps=1/{interval}",
+                        "-frame_pts",
+                        "1",
+                        frame_pattern,
+                    ]
+
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"[ERROR] Failed to extract frames: {result.stderr}")
+                        return []
+
+                    # Upload frames to GCS
+                    frame_paths = []
+                    for i, frame_file in enumerate(sorted(os.listdir(temp_dir))):
+                        if frame_file.startswith("frame_"):
+                            frame_path = f"{output_dir}/image_{i}.jpg"
+                            with open(os.path.join(temp_dir, frame_file), "rb") as f:
+                                self.bucket.blob(frame_path).upload_from_file(f)
+                            frame_paths.append(frame_path)
+
+                    return frame_paths[:4]  # Return only first 4 frames for 2x2 grid
+
+        except Exception as e:
+            print(f"[ERROR] Failed to extract video frames: {str(e)}")
+            return []
+
     def process_album_images(
         self, album_path: str, num_images: int, grid_base_path: str
     ) -> List[str]:
@@ -103,21 +160,65 @@ class ImageGridProcessor:
         """
         grid_paths = []
 
-        # Calculate number of grids needed
-        num_grids = math.ceil(num_images / 4)
+        # Check if first item is a video
+        first_item_path = f"{album_path}/image_0.mp4"
+        if self.bucket.blob(first_item_path).exists():
+            # Extract frames from video
+            print("[INFO] First album item is a video, extracting frames...")
+            frame_paths = self.extract_video_frames(first_item_path, album_path)
+
+            if frame_paths:
+                # Create grid from video frames
+                grid_image = self.create_image_grid(
+                    frame_paths, grid_size=(2, 2), max_width=768
+                )
+
+                # Save grid
+                grid_path = f"{grid_base_path}/grid_0.jpg"
+                self.upload_image_to_gcs(grid_image, grid_path)
+                grid_paths.append(grid_path)
+
+                # Process remaining images if any
+                if num_images > 1:
+                    remaining_paths = [
+                        f"{album_path}/image_{i}.jpg" for i in range(1, num_images)
+                    ]
+                    remaining_grids = self._process_remaining_images(
+                        remaining_paths, grid_base_path
+                    )
+                    grid_paths.extend(remaining_grids)
+
+                return grid_paths
+
+        # If first item is not a video or video processing failed, process normally
+        return self._process_remaining_images(
+            [f"{album_path}/image_{i}.jpg" for i in range(num_images)], grid_base_path
+        )
+
+    def _process_remaining_images(
+        self, image_paths: List[str], grid_base_path: str
+    ) -> List[str]:
+        """Process remaining images in an album into grids.
+
+        Args:
+            image_paths: List of GCS paths to the images
+            grid_base_path: Base GCS path where to save the grid images
+
+        Returns:
+            List of GCS paths to the created grid images
+        """
+        grid_paths = []
+        num_grids = math.ceil(len(image_paths) / 4)
 
         for grid_idx in range(num_grids):
             # Get paths for current grid
             start_idx = grid_idx * 4
-            end_idx = min(start_idx + 4, num_images)
-
-            image_paths = [
-                f"{album_path}/image_{i}.jpg" for i in range(start_idx, end_idx)
-            ]
+            end_idx = min(start_idx + 4, len(image_paths))
+            current_paths = image_paths[start_idx:end_idx]
 
             # Create grid
             grid_image = self.create_image_grid(
-                image_paths, grid_size=(2, 2), max_width=768
+                current_paths, grid_size=(2, 2), max_width=768
             )
 
             # Save grid

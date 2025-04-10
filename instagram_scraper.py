@@ -12,6 +12,7 @@ import io
 from media_processor import MediaProcessor
 from image_processor import ImageGridProcessor
 import numpy as np
+from dotenv import load_dotenv
 
 
 class CloudStorageHandler:
@@ -54,24 +55,45 @@ class CloudStorageHandler:
         blob = self.bucket.blob(blob_name)
         return blob.exists()
 
+    def list_blobs(self, prefix: str = "") -> List[storage.Blob]:
+        """List all blobs in the bucket with the given prefix
+
+        Args:
+            prefix: The prefix to filter blobs by
+
+        Returns:
+            List of blobs matching the prefix
+        """
+        return list(self.bucket.list_blobs(prefix=prefix))
+
 
 class InstagramScraper:
     def __init__(
         self,
-        api_key: str,
+        api_key: Optional[str] = None,
         bucket_name: str = "shopassist-agentic-media-data",
         project_id: str = "shopassist-agentic",
         auto_process_with_vertex: bool = False,
     ):
         """Initialize the scraper with RapidAPI key and GCS bucket"""
-        self.api_key = api_key
+        load_dotenv()
+        self.api_key = api_key or os.getenv("RAPIDAPI_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "API key is required. Set RAPIDAPI_KEY environment variable or pass it directly."
+            )
         self.base_url = "instagram-scraper-api2.p.rapidapi.com"
-        self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": self.base_url}
+        self.headers = {
+            "x-rapidapi-key": self.api_key,
+            "x-rapidapi-host": self.base_url,
+        }
         self.cloud_storage = CloudStorageHandler(bucket_name)
         self.media_processor = MediaProcessor(project_id, bucket_name)
         self.image_processor = ImageGridProcessor(bucket_name)
         self.bucket_name = bucket_name
         self.auto_process_with_vertex = auto_process_with_vertex
+        # Media type mapping for RapidAPI
+        self.media_type_map = {1: "post", 2: "reel", 8: "album"}
 
     def get_user_posts(self, username: str, max_posts: int = 50) -> List[Dict]:
         """Fetch posts for a given username with pagination support"""
@@ -81,7 +103,7 @@ class InstagramScraper:
         try:
             while len(all_posts) < max_posts:
                 # Construct URL with pagination token if available
-                url = f"/v1.2/posts?username_or_id_or_url={username}"
+                url = f"/v1/posts?username_or_id_or_url={username}"
                 if pagination_token:
                     url += f"&pagination_token={pagination_token}"
 
@@ -90,12 +112,9 @@ class InstagramScraper:
                 conn.request("GET", url, headers=self.headers)
 
                 response = conn.getresponse()
-                print(f"[DEBUG] Response status: {response.status}")
-
                 response_data = response.read().decode("utf-8")
-                print(
-                    f"[DEBUG] Raw response: {response_data[:500]}..."
-                )  # Print first 500 chars
+                print(f"[DEBUG] Raw API response: {response_data}")
+                print(f"[DEBUG] Response status: {response.status}")
 
                 data = json.loads(response_data)
 
@@ -149,6 +168,15 @@ class InstagramScraper:
             print(f"\n[DEBUG] Downloading media from: {url}")
             print(f"[DEBUG] Saving to cloud path: {cloud_path}")
 
+            # Ensure URL is a string
+            if not isinstance(url, str):
+                url = str(url)
+
+            # Check if URL is empty
+            if not url or url.strip() == "":
+                print(f"[ERROR] Empty URL provided for {cloud_path}")
+                return False
+
             response = requests.get(url, stream=True)
             response.raise_for_status()
 
@@ -158,6 +186,9 @@ class InstagramScraper:
             print(f"[DEBUG] Uploaded to cloud storage: {cloud_url}")
             return True
 
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Network error downloading media from {url}: {str(e)}")
+            return False
         except Exception as e:
             print(f"[ERROR] Error processing media from {url}: {str(e)}")
             print(f"[ERROR] Error type: {type(e).__name__}")
@@ -174,62 +205,163 @@ class InstagramScraper:
         for post in posts:
             # Extract basic post information
             post_id = post.get("code", "")  # Instagram post code
+            print(f"\n[DEBUG] Raw post data for {post_id}:")
+            print(f"[DEBUG] taken_at field: {post.get('taken_at')}")
+            print(f"[DEBUG] taken_at type: {type(post.get('taken_at'))}")
+            print(f"[DEBUG] All post fields: {list(post.keys())}")
+            print(f"[DEBUG] Full post data: {json.dumps(post, indent=2)}")
+
             caption_data = post.get("caption", {})
             caption_text = (
                 caption_data.get("text", "")
                 if isinstance(caption_data, dict)
                 else str(caption_data)
             )
-            timestamp = post.get("taken_at_timestamp", "")
 
-            # Determine media type and extract media URLs
-            media_type = post.get("media_type", "")
-            if not media_type:
-                if post.get("is_video", False):
-                    media_type = "video"
+            # Extract and format timestamp
+            timestamp = None
+            # Try different timestamp fields in order of preference
+            timestamp_fields = ["taken_at_utc", "taken_at"]
+
+            for field in timestamp_fields:
+                field_value = post.get(field)
+                if field_value:
+                    try:
+                        if isinstance(field_value, (int, str)):
+                            timestamp = pd.Timestamp.fromtimestamp(int(field_value))
+                            print(
+                                f"[DEBUG] Successfully extracted timestamp from {field}: {timestamp}"
+                            )
+                            break
+                    except (ValueError, TypeError) as e:
+                        print(
+                            f"[DEBUG] Error converting {field} value {field_value}: {e}"
+                        )
+                        continue
+
+            if timestamp is None:
+                print(f"[WARNING] No valid timestamp found for post {post_id}")
+                # If this post exists in existing metadata, use that timestamp
+                if (
+                    existing_metadata is not None
+                    and post_id in existing_metadata["post_id"].values
+                ):
+                    existing_timestamp = existing_metadata.loc[
+                        existing_metadata["post_id"] == post_id, "timestamp"
+                    ].iloc[0]
+                    if pd.notna(existing_timestamp):
+                        timestamp = pd.Timestamp(existing_timestamp)
+                        print(
+                            f"[DEBUG] Using existing timestamp for post {post_id}: {timestamp}"
+                        )
+                    else:
+                        # Use current time as last resort
+                        timestamp = pd.Timestamp.now()
+                        print(
+                            f"[DEBUG] Using current time for post {post_id}: {timestamp}"
+                        )
+                else:
+                    # Use current time as last resort
+                    timestamp = pd.Timestamp.now()
+                    print(f"[DEBUG] Using current time for post {post_id}: {timestamp}")
+
+            # Determine media type using the mapping
+            raw_media_type = post.get("media_type")
+            if isinstance(raw_media_type, (int, str)):
+                # Convert string to int if needed
+                type_key = (
+                    int(raw_media_type)
+                    if isinstance(raw_media_type, str)
+                    else raw_media_type
+                )
+                media_type = self.media_type_map.get(
+                    type_key, "post"
+                )  # Default to "post" if unknown
+            else:
+                # Fallback logic for determining media type
+                if post.get("is_video", False) or post.get("video_versions"):
+                    media_type = "reel"
                 elif post.get("carousel_media"):
                     media_type = "album"
                 else:
-                    media_type = "image"
+                    media_type = "post"
 
             # Extract media URLs based on type
             media_urls = []
             if media_type == "album" and post.get("carousel_media"):
                 for item in post["carousel_media"]:
-                    if item.get("video_versions"):
-                        url = item["video_versions"][0].get("url", "")
-                    else:
-                        url = (
-                            item.get("image_versions2", {})
-                            .get("candidates", [{}])[0]
-                            .get("url", "")
+                    try:
+                        if item.get("is_video", False):
+                            # Handle video in album
+                            url = item.get("video_url") or item.get("thumbnail_url", "")
+                        else:
+                            # Handle image in album - check both new and old response structures
+                            if "image_versions" in item and isinstance(
+                                item["image_versions"], list
+                            ):
+                                # Old structure
+                                url = item["image_versions"][0].get("url", "")
+                            elif "image_versions" in item and isinstance(
+                                item["image_versions"], dict
+                            ):
+                                # New structure
+                                url = (
+                                    item["image_versions"]
+                                    .get("items", [{}])[0]
+                                    .get("url", "")
+                                )
+                            else:
+                                # Fallback to thumbnail_url
+                                url = item.get("thumbnail_url", "")
+
+                        if url:
+                            media_urls.append(str(url))  # Ensure URL is string
+                        else:
+                            print(
+                                f"[WARNING] No URL found for album item: {json.dumps(item, indent=2)}"
+                            )
+
+                    except Exception as e:
+                        print(
+                            f"[ERROR] Failed to extract URL from album item: {str(e)}"
                         )
-                    if url:
-                        media_urls.append(url)
-            elif media_type == "video" or post.get("is_video", False):
+                        print(f"[DEBUG] Album item data: {json.dumps(item, indent=2)}")
+                        continue
+
+            elif media_type == "reel":
                 if post.get("video_versions"):
                     url = post["video_versions"][0].get("url", "")
                     if url:
-                        media_urls.append(url)
-            else:  # Single image
-                url = (
-                    post.get("image_versions2", {})
-                    .get("candidates", [{}])[0]
-                    .get("url", "")
-                )
+                        media_urls.append(str(url))
+                elif post.get("video_url"):  # Fallback
+                    media_urls.append(str(post["video_url"]))
+            else:  # Single post
+                # Try different possible structures for single image
+                if "image_versions2" in post:
+                    url = (
+                        post["image_versions2"]
+                        .get("candidates", [{}])[0]
+                        .get("url", "")
+                    )
+                elif "image_versions" in post and isinstance(
+                    post["image_versions"], dict
+                ):
+                    url = post["image_versions"].get("items", [{}])[0].get("url", "")
+                elif "thumbnail_url" in post:
+                    url = post["thumbnail_url"]
+                else:
+                    url = post.get("display_url", "")
+
                 if url:
-                    media_urls.append(url)
+                    media_urls.append(str(url))
 
-            # If no URLs found, try alternate fields
-            if not media_urls:
-                if post.get("video_url"):
-                    media_urls.append(post["video_url"])
-                elif post.get("thumbnail_url"):
-                    media_urls.append(post["thumbnail_url"])
-                elif post.get("display_url"):
-                    media_urls.append(post["display_url"])
-
+            # Debug logging
+            print(f"[DEBUG] Media type: {media_type}")
             print(f"[DEBUG] Found {len(media_urls)} media URLs for post {post_id}")
+            for idx, url in enumerate(media_urls):
+                print(
+                    f"[DEBUG] Media URL {idx}: {url[:100]}..."
+                )  # Print first 100 chars of URL
 
             # Generate GCS location
             base_cloud_path = f"instagram/{username}/media"
@@ -243,27 +375,47 @@ class InstagramScraper:
                     else ""
                 )
 
-            post_data = {
+            # Create metadata dictionary for this post
+            post_metadata = {
                 "username": username,
                 "post_id": post_id,
                 "caption": caption_text,
-                "timestamp": timestamp,
+                "timestamp": timestamp,  # This is now a pd.Timestamp object
                 "media_type": media_type,
                 "like_count": post.get("like_count", 0),
                 "comment_count": post.get("comment_count", 0),
                 "media_urls": media_urls,
-                "processed": False,
-                "vertex_ai_labels": [],
-                "vertex_ai_objects": [],
-                "vertex_ai_text": "",
-                "error": "",
+                "media_processed": False,
+                "media_processed_urls": [],
+                "media_processed_timestamp": None,
+                "media_processed_error": None,
                 "gcs_location": gcs_location,
                 "ai_content_description": "",
                 "ai_processed_time": None,
+                "ai_analysis_results": {
+                    "status": "pending"
+                },  # Initialize with a dummy field
             }
-            metadata.append(post_data)
+            metadata.append(post_metadata)
 
+        # Create DataFrame from metadata
         new_metadata_df = pd.DataFrame(metadata)
+
+        # Ensure timestamp column is datetime64[ns]
+        if "timestamp" in new_metadata_df.columns:
+            # Convert any string timestamps to datetime
+            new_metadata_df["timestamp"] = pd.to_datetime(
+                new_metadata_df["timestamp"], errors="coerce"
+            )
+            # Fill any NaT values with None to ensure proper handling
+            new_metadata_df["timestamp"] = new_metadata_df["timestamp"].where(
+                pd.notna(new_metadata_df["timestamp"]), None
+            )
+
+        # Print all timestamps from posts
+        print("\nTimestamps from posts:")
+        for _, row in new_metadata_df.iterrows():
+            print(f"Post {row['post_id']}: Timestamp={row['timestamp']}")
 
         # Convert any remaining NumPy arrays to Python lists
         for column in new_metadata_df.columns:
@@ -271,22 +423,80 @@ class InstagramScraper:
                 new_metadata_df[column].iloc[0], np.ndarray
             ):
                 new_metadata_df[column] = new_metadata_df[column].apply(
-                    lambda x: x.tolist() if isinstance(x, np.ndarray) else x
+                    lambda x: [str(url) for url in x.tolist()]
+                    if isinstance(x, np.ndarray)
+                    else x
                 )
 
+        # Ensure media_urls are always lists of strings
+        new_metadata_df["media_urls"] = new_metadata_df["media_urls"].apply(
+            lambda x: [str(url) for url in x]
+            if isinstance(x, (list, np.ndarray))
+            else [str(x)]
+            if isinstance(x, str)
+            else []
+        )
+
+        # Debug print media_urls types
+        print("\n[DEBUG] Media URLs types after conversion:")
+        for idx, row in new_metadata_df.iterrows():
+            print(f"Post {row['post_id']} media_urls type: {type(row['media_urls'])}")
+            print(f"Media URLs: {row['media_urls']}")
+
+        # Additional check to ensure all media_urls are lists
+        for idx, row in new_metadata_df.iterrows():
+            if not isinstance(row["media_urls"], list):
+                print(
+                    f"[WARNING] Converting non-list media_urls for post {row['post_id']} to list"
+                )
+                if isinstance(row["media_urls"], str):
+                    new_metadata_df.at[idx, "media_urls"] = [row["media_urls"]]
+                elif isinstance(row["media_urls"], np.ndarray):
+                    new_metadata_df.at[idx, "media_urls"] = row["media_urls"].tolist()
+                else:
+                    new_metadata_df.at[idx, "media_urls"] = []
+
         if existing_metadata is not None:
-            # Only add new posts that aren't in existing metadata
+            # Create a lookup dictionary for new metadata
+            new_metadata_lookup = {
+                row["post_id"]: row for _, row in new_metadata_df.iterrows()
+            }
+
+            # Update timestamps in existing metadata
+            for idx, row in existing_metadata.iterrows():
+                post_id = row["post_id"]
+                if post_id in new_metadata_lookup:
+                    new_timestamp = new_metadata_lookup[post_id]["timestamp"]
+                    if new_timestamp:  # Only update if new timestamp is not empty
+                        existing_metadata.at[idx, "timestamp"] = new_timestamp
+                        print(
+                            f"[DEBUG] Updated timestamp for existing post {post_id}: {new_timestamp}"
+                        )
+
+            # Only add posts that aren't in existing metadata
             existing_post_ids = set(existing_metadata["post_id"])
-            new_metadata_df = new_metadata_df[
+            new_posts_df = new_metadata_df[
                 ~new_metadata_df["post_id"].isin(existing_post_ids)
             ]
 
-            if not new_metadata_df.empty:
+            if not new_posts_df.empty:
+                print(
+                    f"\n[DEBUG] Adding {len(new_posts_df)} new posts to existing metadata"
+                )
                 new_metadata_df = pd.concat(
-                    [existing_metadata, new_metadata_df], ignore_index=True
+                    [existing_metadata, new_posts_df], ignore_index=True
                 )
             else:
+                print("\n[DEBUG] No new posts to add")
                 new_metadata_df = existing_metadata
+
+            # Ensure ai_analysis_results is always a dictionary
+            if "ai_analysis_results" in new_metadata_df.columns:
+                new_metadata_df["ai_analysis_results"] = new_metadata_df[
+                    "ai_analysis_results"
+                ].apply(
+                    lambda x: {} if pd.isna(x) else (x if isinstance(x, dict) else {})
+                )
 
         return new_metadata_df
 
@@ -315,7 +525,7 @@ class InstagramScraper:
                     )
 
                     # Determine media type and process accordingly
-                    if row["media_type"] in ["post", "image"]:
+                    if row["media_type"] == "post":
                         analysis_results = self.media_processor.process_image(gcs_uri)
                         # Ensure consistent structure
                         analysis_results = {
@@ -332,7 +542,7 @@ class InstagramScraper:
                                 analysis_results, "image"
                             )
                         )
-                    elif row["media_type"] in ["reel", "video"]:
+                    elif row["media_type"] == "reel":
                         analysis_results = self.media_processor.process_video(gcs_uri)
                         # Ensure consistent structure
                         analysis_results = {
@@ -393,7 +603,9 @@ class InstagramScraper:
                         continue
 
                     # Update DataFrame with AI analysis results and timestamp
-                    df.at[idx, "ai_analysis_results"] = analysis_results
+                    df.at[idx, "ai_analysis_results"] = (
+                        analysis_results  # Store as dict, not JSON string
+                    )
                     df.at[idx, "ai_content_description"] = content_description
                     df.at[idx, "ai_processed_time"] = datetime.now().timestamp()
                     processed_count += 1
@@ -431,19 +643,25 @@ class InstagramScraper:
             )
 
         # Truncate long fields for display with safe handling
-        display_df["caption"] = display_df["caption"].apply(safe_truncate)
-        display_df["media_urls"] = display_df["media_urls"].apply(
-            lambda x: f"{len(x)} media items" if isinstance(x, list) else "1 media item"
-        )
-        display_df["gcs_location"] = display_df["gcs_location"].apply(
-            lambda x: safe_truncate(x) if x else ""
-        )
-        display_df["ai_content_description"] = display_df[
-            "ai_content_description"
-        ].apply(lambda x: safe_truncate(x, 100) if x else "")
+        if "caption" in display_df.columns:
+            display_df["caption"] = display_df["caption"].apply(safe_truncate)
+        if "media_urls" in display_df.columns:
+            display_df["media_urls"] = display_df["media_urls"].apply(
+                lambda x: f"{len(x)} media items"
+                if isinstance(x, list)
+                else "1 media item"
+            )
+        if "gcs_location" in display_df.columns:
+            display_df["gcs_location"] = display_df["gcs_location"].apply(
+                lambda x: safe_truncate(x) if x else ""
+            )
+        if "ai_content_description" in display_df.columns:
+            display_df["ai_content_description"] = display_df[
+                "ai_content_description"
+            ].apply(lambda x: safe_truncate(x, 100) if x else "")
 
-        # Reorder columns to show post_id and post_link at the beginning
-        columns_order = [
+        # Get available columns that match our desired order
+        desired_columns = [
             "post_id",
             "caption",
             "timestamp",
@@ -452,15 +670,16 @@ class InstagramScraper:
             "comment_count",
             "media_urls",
             "processed",
-            "vertex_ai_labels",
-            "vertex_ai_objects",
-            "vertex_ai_text",
-            "error",
             "ai_content_description",
             "ai_processed_time",
             "gcs_location",
         ]
-        display_df = display_df[columns_order]
+
+        # Filter to only include columns that exist in the DataFrame
+        columns_to_display = [
+            col for col in desired_columns if col in display_df.columns
+        ]
+        display_df = display_df[columns_to_display]
 
         print("\nPost Metadata:")
         print(tabulate(display_df, headers="keys", tablefmt="grid", showindex=False))
@@ -474,6 +693,17 @@ class InstagramScraper:
                 post_id = row["post_id"]
                 media_type = row["media_type"]
                 media_urls = row["media_urls"]
+
+                # Ensure media_urls is a list
+                if isinstance(media_urls, str):
+                    media_urls = [media_urls]
+                elif isinstance(media_urls, np.ndarray):
+                    media_urls = media_urls.tolist()
+                elif not isinstance(media_urls, list):
+                    print(
+                        f"[WARNING] Unexpected media_urls type for post {post_id}: {type(media_urls)}"
+                    )
+                    media_urls = []
 
                 if not media_urls:
                     print(
@@ -542,9 +772,9 @@ class InstagramScraper:
 
             if not posts:
                 print(f"No posts found for {username}")
-                return None
+                return existing_metadata
 
-            # Create/update metadata DataFrame
+            # Create/update metadata DataFrame - pass existing_metadata to properly merge
             metadata_df = self.extract_post_metadata(posts, username, existing_metadata)
 
             if metadata_df.empty:
@@ -577,20 +807,29 @@ class InstagramScraper:
                 self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
                 print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
 
+            # Verify metadata integrity to ensure it accurately reflects all files
+            print("\nVerifying metadata integrity...")
+            metadata_df = self.verify_metadata_integrity(username)
+            if metadata_df is not None:
+                print(f"Final metadata contains {len(metadata_df)} records")
+
             return metadata_df
 
         except Exception as e:
             print(f"Error: {str(e)}")
             return None
 
-    def run_ai_processing(self, username: str) -> Optional[pd.DataFrame]:
+    def run_ai_processing(
+        self, username: str, processing_option: str = "update_remaining"
+    ) -> Optional[pd.DataFrame]:
         """Run AI processing pipeline independently on existing metadata
 
-        This method allows running the AI processing pipeline separately from the scraping pipeline.
-        It provides three options:
-        1. Update all - Process all items regardless of previous processing
-        2. Update remaining - Process only items that haven't been processed yet
-        3. Don't update - Skip processing
+        Args:
+            username: Instagram username to process
+            processing_option: One of 'update_all', 'update_remaining', or 'skip'
+
+        Returns:
+            Optional[pd.DataFrame]: Updated metadata DataFrame or None if processing fails
         """
         try:
             # Load existing metadata
@@ -600,6 +839,14 @@ class InstagramScraper:
             if metadata_df is None or metadata_df.empty:
                 print(f"[ERROR] No metadata found for user {username}")
                 return None
+
+            # Ensure ai_analysis_results is always a dictionary
+            if "ai_analysis_results" in metadata_df.columns:
+                metadata_df["ai_analysis_results"] = metadata_df[
+                    "ai_analysis_results"
+                ].apply(
+                    lambda x: {} if pd.isna(x) else (x if isinstance(x, dict) else {})
+                )
 
             # Count items needing processing
             unprocessed_items = metadata_df[
@@ -612,28 +859,20 @@ class InstagramScraper:
             print(f"\nFound {total_items} total items in metadata")
             print(f"Items not yet processed: {items_to_process}")
 
-            # Ask for processing option
-            while True:
-                print("\nChoose processing option:")
-                print("1. Update all - Process all items")
-                print("2. Update remaining - Process only unprocessed items")
-                print("3. Don't update - Skip processing")
-                choice = input("Enter choice (1/2/3): ").strip()
-
-                if choice in ["1", "2", "3"]:
-                    break
-                print("Invalid choice. Please enter 1, 2, or 3.")
-
-            if choice == "3":
+            # Process based on the provided option
+            if processing_option == "skip":
                 print("Skipping AI processing.")
                 return metadata_df
 
-            if choice == "1":
+            if processing_option == "update_all":
                 # Reset AI processing flags to process all items
                 metadata_df["ai_content_description"] = ""
                 metadata_df["ai_processed_time"] = None
+                metadata_df["ai_analysis_results"] = metadata_df[
+                    "ai_analysis_results"
+                ].apply(lambda x: {"status": "pending"})
                 print(f"\nProcessing all {total_items} items...")
-            else:  # choice == "2"
+            else:  # update_remaining
                 if items_to_process == 0:
                     print("No items need processing.")
                     return metadata_df
@@ -650,8 +889,198 @@ class InstagramScraper:
             self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
             print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
 
+            # Verify metadata integrity to ensure it accurately reflects all files
+            print("\nVerifying metadata integrity...")
+            metadata_df = self.verify_metadata_integrity(username)
+            if metadata_df is not None:
+                print(f"Final metadata contains {len(metadata_df)} records")
+
             return metadata_df
 
         except Exception as e:
             print(f"[ERROR] Failed to run AI processing: {str(e)}")
             return None
+
+    def verify_metadata_integrity(self, username: str) -> Optional[pd.DataFrame]:
+        """Verify that metadata accurately reflects all files in the media folder
+
+        This method:
+        1. Checks if all media files referenced in metadata exist in cloud storage
+        2. Checks if all media files in cloud storage are referenced in metadata
+        3. Updates metadata to reflect the actual state of media files
+
+        Returns:
+            Optional[pd.DataFrame]: Updated metadata DataFrame or None if verification fails
+        """
+        try:
+            # Load existing metadata
+            metadata_path = f"instagram/{username}/metadata.parquet"
+            metadata_df = self.cloud_storage.download_dataframe(metadata_path)
+
+            if metadata_df is None or metadata_df.empty:
+                print(f"[ERROR] No metadata found for user {username}")
+                return None
+
+            print(f"\nVerifying metadata integrity for {username}")
+            print(f"Found {len(metadata_df)} records in metadata")
+
+            # Base path for media files
+            base_cloud_path = f"instagram/{username}/media"
+
+            # Check if all media files referenced in metadata exist in cloud storage
+            missing_files = []
+            for idx, row in metadata_df.iterrows():
+                post_id = row["post_id"]
+                media_type = row["media_type"]
+                gcs_location = row["gcs_location"]
+
+                if not gcs_location:
+                    print(f"[WARNING] Post {post_id} has no GCS location")
+                    missing_files.append((post_id, gcs_location))
+                    continue
+
+                if media_type == "album":
+                    # For albums, check if at least one file exists in the album directory
+                    album_prefix = f"{gcs_location}/"
+                    album_files = self.cloud_storage.list_blobs(prefix=album_prefix)
+
+                    if not album_files:
+                        missing_files.append((post_id, gcs_location))
+                        print(
+                            f"[WARNING] Album directory empty or missing for post {post_id}: {gcs_location}"
+                        )
+                    else:
+                        print(
+                            f"[INFO] Found {len(album_files)} files in album for post {post_id}"
+                        )
+                else:
+                    # For single media files, check if the file exists
+                    if not self.cloud_storage.blob_exists(gcs_location):
+                        missing_files.append((post_id, gcs_location))
+                        print(
+                            f"[WARNING] Media file missing for post {post_id}: {gcs_location}"
+                        )
+
+            # If there are missing files, remove those records from metadata
+            if missing_files:
+                print(f"\nFound {len(missing_files)} missing media files")
+                missing_post_ids = [post_id for post_id, _ in missing_files]
+
+                # Remove records with missing media files
+                original_count = len(metadata_df)
+                metadata_df = metadata_df[
+                    ~metadata_df["post_id"].isin(missing_post_ids)
+                ]
+                removed_count = original_count - len(metadata_df)
+
+                print(f"Removed {removed_count} records with missing media files")
+
+            # List all media files in the cloud storage
+            all_media_files = []
+            prefix = f"{base_cloud_path}/"
+
+            # List all blobs with the prefix
+            blobs = self.cloud_storage.list_blobs(prefix=prefix)
+            for blob in blobs:
+                all_media_files.append(blob.name)
+
+            print(f"\nFound {len(all_media_files)} media files in cloud storage")
+
+            # Check if all media files in cloud storage are referenced in metadata
+            unreferenced_files = []
+            for file_path in all_media_files:
+                # Extract post_id from file path
+                # Format: instagram/{username}/media/post_{post_id}_{media_type}.{ext}
+                # or: instagram/{username}/media/post_{post_id}_album/image_{idx}.{ext}
+                parts = file_path.split("/")
+                if len(parts) < 4:
+                    continue
+
+                filename = parts[-1]
+                if filename.startswith("post_"):
+                    post_id = filename.split("_")[1]
+                    if post_id not in metadata_df["post_id"].values:
+                        unreferenced_files.append(file_path)
+                        print(f"[WARNING] Unreferenced media file: {file_path}")
+
+            # If there are unreferenced files, add them to metadata
+            if unreferenced_files:
+                print(f"\nFound {len(unreferenced_files)} unreferenced media files")
+                for file_path in unreferenced_files:
+                    # Extract post_id and media_type from file path
+                    parts = file_path.split("/")
+                    filename = parts[-1]
+
+                    if filename.startswith("post_"):
+                        post_id = filename.split("_")[1]
+                        media_type = filename.split("_")[2].split(".")[0]
+
+                        # Create a new record for this unreferenced file
+                        new_record = {
+                            "username": username,
+                            "post_id": post_id,
+                            "caption": "",
+                            "timestamp": pd.Timestamp.now(),
+                            "media_type": media_type,
+                            "like_count": 0,
+                            "comment_count": 0,
+                            "media_urls": [],
+                            "media_processed": False,
+                            "media_processed_urls": [],
+                            "media_processed_timestamp": None,
+                            "media_processed_error": None,
+                            "gcs_location": file_path,
+                            "ai_content_description": "",
+                            "ai_processed_time": None,
+                            "ai_analysis_results": {"status": "pending"},
+                        }
+
+                        # Add the new record to metadata
+                        metadata_df = pd.concat(
+                            [metadata_df, pd.DataFrame([new_record])], ignore_index=True
+                        )
+                        print(f"Added unreferenced file to metadata: {file_path}")
+
+            # Save updated metadata
+            if missing_files or unreferenced_files:
+                self.cloud_storage.upload_dataframe(metadata_df, metadata_path)
+                print(f"\nUpdated metadata saved to cloud storage: {metadata_path}")
+            else:
+                print("\nMetadata integrity verified - no issues found")
+
+            return metadata_df
+
+        except Exception as e:
+            print(f"[ERROR] Failed to verify metadata integrity: {str(e)}")
+            return None
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1:
+        username = sys.argv[1]
+        print(f"\n[INFO] Starting scrape for user: {username}")
+        try:
+            # Initialize scraper
+            scraper = InstagramScraper()
+            # Get posts
+            posts = scraper.get_user_posts(username)
+            if posts:
+                print(f"[INFO] Found {len(posts)} posts")
+                # Process posts
+                metadata_df = scraper.extract_post_metadata(posts, username)
+                if metadata_df is not None:
+                    print("\n[INFO] Final metadata:")
+                    scraper.display_metadata_table(metadata_df)
+                else:
+                    print("[ERROR] Failed to create metadata DataFrame")
+            else:
+                print("[ERROR] No posts found")
+        except Exception as e:
+            print(f"[ERROR] Scraping failed: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+    else:
+        print("Please provide a username as argument")

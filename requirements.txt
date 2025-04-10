@@ -9,3 +9,6 @@ google-cloud-vision>=3.5.0  # for Vision API
 google-cloud-videointelligence>=2.11.0  # for Video Intelligence API
 Pillow>=10.0.0  # for image processing 
 python-ffmpeg>=2.0.0  # for video preprocessing 
+fastapi>=0.104.0
+uvicorn>=0.24.0
+firebase-admin>=6.2.0 

@@ -85,9 +85,9 @@ def main():
     parser.add_argument(
         "--mode",
         "-M",
-        choices=["scrape", "ai"],
+        choices=["scrape", "ai", "verify"],
         required=True,
-        help='Mode: "scrape" for scraping posts, "ai" for running AI processing',
+        help='Mode: "scrape" for scraping posts, "ai" for running AI processing, "verify" for verifying metadata integrity',
     )
 
     args = parser.parse_args()
@@ -122,11 +122,16 @@ def main():
         metadata_df = scraper.process_profile(args.username, args.max_posts)
         if metadata_df is not None:
             print("\nScraping pipeline completed successfully")
-    else:  # mode == 'ai'
+    elif args.mode == "ai":
         print(f"\nStarting AI processing pipeline for user: {args.username}")
         metadata_df = scraper.run_ai_processing(args.username)
         if metadata_df is not None:
             print("\nAI processing pipeline completed successfully")
+    else:  # mode == 'verify'
+        print(f"\nStarting metadata verification for user: {args.username}")
+        metadata_df = scraper.verify_metadata_integrity(args.username)
+        if metadata_df is not None:
+            print("\nMetadata verification completed successfully")
 
 
 if __name__ == "__main__":
