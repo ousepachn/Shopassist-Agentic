@@ -211,12 +211,17 @@ class InstagramScraper:
             print(f"[DEBUG] All post fields: {list(post.keys())}")
             print(f"[DEBUG] Full post data: {json.dumps(post, indent=2)}")
 
+            # Debug caption data
             caption_data = post.get("caption", {})
+            print(f"[DEBUG] Caption data type: {type(caption_data)}")
+            print(f"[DEBUG] Caption data: {json.dumps(caption_data, indent=2)}")
+
             caption_text = (
                 caption_data.get("text", "")
                 if isinstance(caption_data, dict)
                 else str(caption_data)
             )
+            print(f"[DEBUG] Extracted caption text: {caption_text}")
 
             # Extract and format timestamp
             timestamp = None
@@ -366,11 +371,11 @@ class InstagramScraper:
             # Generate GCS location
             base_cloud_path = f"instagram/{username}/media"
             if media_type == "album":
-                gcs_location = f"{base_cloud_path}/post_{post_id}_album"
+                gcs_location = f"{base_cloud_path}/post__{post_id}__album"
             else:
                 ext = media_urls[0].split("?")[0].split(".")[-1] if media_urls else ""
                 gcs_location = (
-                    f"{base_cloud_path}/post_{post_id}_{media_type}.{ext}"
+                    f"{base_cloud_path}/post__{post_id}__{media_type}.{ext}"
                     if ext
                     else ""
                 )
@@ -719,9 +724,7 @@ class InstagramScraper:
                             )
                             continue
                         ext = url.split("?")[0].split(".")[-1]
-                        cloud_path = (
-                            f"{base_cloud_path}/post_{post_id}_album/image_{idx}.{ext}"
-                        )
+                        cloud_path = f"{base_cloud_path}/post__{post_id}__album/image_{idx}.{ext}"
                         # Check if file already exists
                         if self.cloud_storage.blob_exists(cloud_path):
                             print(
@@ -735,7 +738,9 @@ class InstagramScraper:
                         continue
                     url = media_urls[0]
                     ext = url.split("?")[0].split(".")[-1]
-                    cloud_path = f"{base_cloud_path}/post_{post_id}_{media_type}.{ext}"
+                    cloud_path = (
+                        f"{base_cloud_path}/post__{post_id}__{media_type}.{ext}"
+                    )
                     # Check if file already exists
                     if self.cloud_storage.blob_exists(cloud_path):
                         print(
@@ -990,15 +995,15 @@ class InstagramScraper:
             unreferenced_files = []
             for file_path in all_media_files:
                 # Extract post_id from file path
-                # Format: instagram/{username}/media/post_{post_id}_{media_type}.{ext}
-                # or: instagram/{username}/media/post_{post_id}_album/image_{idx}.{ext}
+                # Format: instagram/{username}/media/post__{post_id}__{media_type}.{ext}
+                # or: instagram/{username}/media/post__{post_id}__album/image_{idx}.{ext}
                 parts = file_path.split("/")
                 if len(parts) < 4:
                     continue
 
                 filename = parts[-1]
-                if filename.startswith("post_"):
-                    post_id = filename.split("_")[1]
+                if filename.startswith("post__"):
+                    post_id = filename.split("__")[1]
                     if post_id not in metadata_df["post_id"].values:
                         unreferenced_files.append(file_path)
                         print(f"[WARNING] Unreferenced media file: {file_path}")
@@ -1011,9 +1016,9 @@ class InstagramScraper:
                     parts = file_path.split("/")
                     filename = parts[-1]
 
-                    if filename.startswith("post_"):
-                        post_id = filename.split("_")[1]
-                        media_type = filename.split("_")[2].split(".")[0]
+                    if filename.startswith("post__"):
+                        post_id = filename.split("__")[1]
+                        media_type = filename.split("__")[2].split(".")[0]
 
                         # Create a new record for this unreferenced file
                         new_record = {

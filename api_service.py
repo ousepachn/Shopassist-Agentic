@@ -330,7 +330,28 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
 
         # Initialize status in Firestore
         doc_ref = db.collection("scraping_results").document(request.username)
-        doc_ref.set(
+
+        # First, check if the document exists and has metadata
+        doc = doc_ref.get()
+        if not doc.exists:
+            logger.error(f"Document for {request.username} does not exist")
+            raise HTTPException(
+                status_code=404, detail=f"Document for {request.username} not found"
+            )
+
+        existing_data = doc.to_dict()
+        existing_metadata = existing_data.get("metadata", [])
+        logger.info(
+            f"Initial check - Existing metadata length: {len(existing_metadata)}"
+        )
+
+        if len(existing_metadata) == 0:
+            logger.warning(
+                f"Document for {request.username} has empty metadata array. This might cause issues."
+            )
+
+        # Update status to initializing
+        doc_ref.update(
             {
                 "status": "initializing",
                 "timestamp": firestore.SERVER_TIMESTAMP,
@@ -350,14 +371,40 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
                 )
 
                 if metadata_df is not None:
+                    # Log the DataFrame info
+                    logger.info(f"Metadata DataFrame shape: {metadata_df.shape}")
+                    logger.info(
+                        f"Metadata DataFrame columns: {metadata_df.columns.tolist()}"
+                    )
+
+                    # Check if AI fields are present
+                    ai_fields = [
+                        "ai_analysis",
+                        "ai_content_description",
+                        "ai_processed_time",
+                        "ai_analysis_results",
+                    ]
+                    for field in ai_fields:
+                        if field in metadata_df.columns:
+                            non_empty = metadata_df[field].notna().sum()
+                            logger.info(
+                                f"Non-empty {field} values: {non_empty}/{len(metadata_df)}"
+                            )
+                        else:
+                            logger.warning(f"Field {field} not found in DataFrame")
+
                     # Convert metadata to dict for Firestore
                     logger.debug("Converting metadata DataFrame to dictionary")
                     metadata_dict = metadata_df.to_dict(orient="records")
+                    logger.info(f"Metadata dictionary length: {len(metadata_dict)}")
 
                     # Convert NumPy arrays to lists for Firestore compatibility
                     logger.debug("Converting data to Firestore compatible format")
                     firestore_compatible_metadata = convert_to_firestore_compatible(
                         metadata_dict
+                    )
+                    logger.info(
+                        f"Firestore compatible metadata length: {len(firestore_compatible_metadata)}"
                     )
 
                     # Store in Firestore
@@ -365,17 +412,70 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
                         request.username
                     )
 
-                    # Get existing document
+                    # Get existing document again to ensure we have the latest data
                     doc = doc_ref.get()
                     if doc.exists:
                         existing_data = doc.to_dict()
                         existing_metadata = existing_data.get("metadata", [])
+                        logger.info(
+                            f"Existing metadata length: {len(existing_metadata)}"
+                        )
+
+                        # Log the first few post IDs in existing metadata
+                        if existing_metadata:
+                            logger.info(
+                                f"First few post IDs in existing metadata: {[post.get('post_id', 'N/A') for post in existing_metadata[:5]]}"
+                            )
+
+                        # Log the first few post IDs in new metadata
+                        if firestore_compatible_metadata:
+                            logger.info(
+                                f"First few post IDs in new metadata: {[post.get('post_id', 'N/A') for post in firestore_compatible_metadata[:5]]}"
+                            )
+
+                        # If existing metadata is empty, use the new metadata directly
+                        if (
+                            len(existing_metadata) == 0
+                            and len(firestore_compatible_metadata) > 0
+                        ):
+                            logger.info(
+                                "Existing metadata is empty. Using new metadata directly."
+                            )
+                            doc_ref.update(
+                                {
+                                    "metadata": firestore_compatible_metadata,
+                                    "status": "completed",
+                                    "timestamp": firestore.SERVER_TIMESTAMP,
+                                    "message": f"Successfully added {len(firestore_compatible_metadata)} posts with AI analysis",
+                                }
+                            )
+                            return
 
                         # Update metadata based on processing option
                         if request.processing_option == "update_all":
                             logger.info(
                                 f"Updating all posts with new AI analysis. Found {len(firestore_compatible_metadata)} posts in parquet file"
                             )
+
+                            # CRITICAL FIX: If existing_metadata is empty but firestore_compatible_metadata has data,
+                            # use the firestore_compatible_metadata directly instead of trying to match
+                            if (
+                                len(existing_metadata) == 0
+                                and len(firestore_compatible_metadata) > 0
+                            ):
+                                logger.info(
+                                    "Existing metadata is empty but new metadata has data. Using new metadata directly."
+                                )
+                                doc_ref.update(
+                                    {
+                                        "metadata": firestore_compatible_metadata,
+                                        "status": "completed",
+                                        "timestamp": firestore.SERVER_TIMESTAMP,
+                                        "message": f"Successfully added {len(firestore_compatible_metadata)} posts with AI analysis",
+                                    }
+                                )
+                                return
+
                             # Update all posts with new AI analysis
                             updated_metadata = []
                             for new_post in firestore_compatible_metadata:
@@ -412,11 +512,41 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
                                     logger.warning(
                                         f"Could not find matching post for post_id {new_post.get('post_id')}"
                                     )
+                                    # CRITICAL FIX: If we can't find a matching post, add the new post to the updated metadata
+                                    logger.info(
+                                        f"Adding new post {new_post.get('post_id')} to metadata"
+                                    )
+                                    updated_metadata.append(new_post)
+
+                            # CRITICAL FIX: If no posts were updated but we have new metadata, use the new metadata
+                            if (
+                                len(updated_metadata) == 0
+                                and len(firestore_compatible_metadata) > 0
+                            ):
+                                logger.warning(
+                                    "No posts were updated but we have new metadata. Using new metadata directly."
+                                )
+                                updated_metadata = firestore_compatible_metadata
 
                             # Update Firestore with complete metadata array
                             logger.info(
                                 f"Updating Firestore with {len(updated_metadata)} processed posts"
                             )
+
+                            # CRITICAL FIX: Ensure we're not updating with an empty array
+                            if len(updated_metadata) == 0:
+                                logger.error(
+                                    "Attempting to update Firestore with empty metadata array. Aborting update."
+                                )
+                                doc_ref.update(
+                                    {
+                                        "status": "failed",
+                                        "timestamp": firestore.SERVER_TIMESTAMP,
+                                        "error": "Failed to update metadata: Empty metadata array",
+                                    }
+                                )
+                                return
+
                             doc_ref.update(
                                 {
                                     "metadata": updated_metadata,
@@ -427,8 +557,55 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
                             )
                         elif request.processing_option == "update_remaining":
                             # Update only posts without AI analysis
+                            updated_count = 0
+                            posts_without_ai = []
+                            posts_with_ai = []
+
+                            # CRITICAL FIX: If existing_metadata is empty but firestore_compatible_metadata has data,
+                            # use the firestore_compatible_metadata directly
+                            if (
+                                len(existing_metadata) == 0
+                                and len(firestore_compatible_metadata) > 0
+                            ):
+                                logger.info(
+                                    "Existing metadata is empty but new metadata has data. Using new metadata directly."
+                                )
+                                doc_ref.update(
+                                    {
+                                        "metadata": firestore_compatible_metadata,
+                                        "status": "completed",
+                                        "timestamp": firestore.SERVER_TIMESTAMP,
+                                        "message": f"Successfully added {len(firestore_compatible_metadata)} posts with AI analysis",
+                                    }
+                                )
+                                return
+
+                            # First, correctly identify posts with and without AI analysis
                             for post in existing_metadata:
-                                if not post.get("ai_analysis"):
+                                # Check if post has ai_analysis_results and if it contains a description field
+                                if post.get("ai_analysis_results") and post.get(
+                                    "ai_analysis_results", {}
+                                ).get("description"):
+                                    posts_with_ai.append(post.get("post_id", "N/A"))
+                                else:
+                                    posts_without_ai.append(post.get("post_id", "N/A"))
+
+                            logger.info(
+                                f"Initial state - Posts without AI analysis: {posts_without_ai}"
+                            )
+                            logger.info(
+                                f"Initial state - Posts with AI analysis: {posts_with_ai}"
+                            )
+
+                            # Now process posts without AI analysis
+                            for post in existing_metadata:
+                                # Check if post has ai_analysis_results and if it contains a description field
+                                if not (
+                                    post.get("ai_analysis_results")
+                                    and post.get("ai_analysis_results", {}).get(
+                                        "description"
+                                    )
+                                ):
                                     # Find matching new metadata
                                     new_data = next(
                                         (
@@ -438,26 +615,182 @@ async def process_ai(request: ProcessAIRequest, background_tasks: BackgroundTask
                                         ),
                                         None,
                                     )
-                                    if new_data and "ai_analysis" in new_data:
-                                        post["ai_analysis"] = new_data["ai_analysis"]
+                                    # Check if new_data has meaningful AI analysis results with description
+                                    if (
+                                        new_data
+                                        and "ai_analysis_results" in new_data
+                                        and new_data.get("ai_analysis_results")
+                                        and new_data.get("ai_analysis_results", {}).get(
+                                            "description"
+                                        )
+                                    ):
+                                        # Log the AI analysis to verify it's meaningful
+                                        logger.info(
+                                            f"Found meaningful AI analysis for post {post['post_id']}: {new_data.get('ai_analysis_results')}"
+                                        )
+
+                                        # Update the correct field names
+                                        post["ai_analysis_results"] = new_data[
+                                            "ai_analysis_results"
+                                        ]
                                         post["ai_content_description"] = new_data.get(
                                             "ai_content_description", ""
                                         )
                                         post["ai_processed_time"] = new_data.get(
                                             "ai_processed_time"
                                         )
-                                        post["ai_analysis_results"] = new_data.get(
-                                            "ai_analysis_results", {}
+                                        updated_count += 1
+                                        logger.info(
+                                            f"Updated post {post['post_id']} with AI analysis"
                                         )
+                                    elif new_data:
+                                        logger.warning(
+                                            f"Post {post['post_id']} has matching data but no meaningful AI analysis results with description"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"No matching data found for post {post['post_id']}"
+                                        )
+
+                            # Recalculate posts with and without AI analysis after updates
+                            posts_without_ai = []
+                            posts_with_ai = []
+                            for post in existing_metadata:
+                                # Check if post has ai_analysis_results and if it contains a description field
+                                if post.get("ai_analysis_results") and post.get(
+                                    "ai_analysis_results", {}
+                                ).get("description"):
+                                    posts_with_ai.append(post.get("post_id", "N/A"))
+                                else:
+                                    posts_without_ai.append(post.get("post_id", "N/A"))
+
+                            logger.info(
+                                f"Updated {updated_count} posts with AI analysis"
+                            )
+                            logger.info(
+                                f"Posts without AI analysis: {posts_without_ai}"
+                            )
+                            logger.info(f"Posts with AI analysis: {posts_with_ai}")
+
+                            # Check if any posts were updated
+                            if updated_count == 0:
+                                logger.warning(
+                                    "No posts were updated. All posts might already have AI analysis."
+                                )
+                                # Check if all posts already have AI analysis with description
+                                all_have_ai = all(
+                                    post.get("ai_analysis_results")
+                                    and post.get("ai_analysis_results", {}).get(
+                                        "description"
+                                    )
+                                    for post in existing_metadata
+                                )
+                                if all_have_ai:
+                                    logger.info(
+                                        "All posts already have AI analysis with description."
+                                    )
+                                else:
+                                    logger.warning(
+                                        "Some posts don't have AI analysis with description but weren't updated."
+                                    )
+                                    # Log the post IDs in the new metadata
+                                    new_post_ids = [
+                                        post["post_id"]
+                                        for post in firestore_compatible_metadata
+                                    ]
+                                    logger.warning(
+                                        f"Posts in new metadata: {new_post_ids}"
+                                    )
+
+                                    # Check if there's a mismatch between existing and new metadata
+                                    existing_post_ids = [
+                                        post.get("post_id", "N/A")
+                                        for post in existing_metadata
+                                    ]
+                                    new_post_ids = [
+                                        post.get("post_id", "N/A")
+                                        for post in firestore_compatible_metadata
+                                    ]
+
+                                    # Find posts in existing metadata but not in new metadata
+                                    missing_in_new = [
+                                        pid
+                                        for pid in existing_post_ids
+                                        if pid not in new_post_ids
+                                    ]
+                                    logger.warning(
+                                        f"Posts in existing metadata but not in new metadata: {missing_in_new}"
+                                    )
+
+                                    # Find posts in new metadata but not in existing metadata
+                                    missing_in_existing = [
+                                        pid
+                                        for pid in new_post_ids
+                                        if pid not in existing_post_ids
+                                    ]
+                                    logger.warning(
+                                        f"Posts in new metadata but not in existing metadata: {missing_in_existing}"
+                                    )
+
+                                    # If no posts were updated but some don't have AI analysis, use the new metadata
+                                    if len(firestore_compatible_metadata) > 0:
+                                        logger.info(
+                                            "Using new metadata from AI processing."
+                                        )
+                                        existing_metadata = (
+                                            firestore_compatible_metadata
+                                        )
+
+                            # Log the metadata before updating Firestore
+                            logger.info(
+                                f"Metadata length before Firestore update: {len(existing_metadata)}"
+                            )
+                            if existing_metadata:
+                                logger.info(
+                                    f"First post in metadata before update: {existing_metadata[0].get('post_id', 'N/A')}"
+                                )
+                                logger.info(
+                                    f"AI fields in first post: ai_analysis_results={bool(existing_metadata[0].get('ai_analysis_results'))}, ai_content_description={bool(existing_metadata[0].get('ai_content_description'))}"
+                                )
+
+                            # CRITICAL FIX: Ensure we're not updating with an empty array
+                            if len(existing_metadata) == 0:
+                                logger.error(
+                                    "Attempting to update Firestore with empty metadata array. Aborting update."
+                                )
+                                doc_ref.update(
+                                    {
+                                        "status": "failed",
+                                        "timestamp": firestore.SERVER_TIMESTAMP,
+                                        "error": "Failed to update metadata: Empty metadata array",
+                                    }
+                                )
+                                return
 
                             doc_ref.update(
                                 {
                                     "metadata": existing_metadata,
                                     "status": "completed",
                                     "timestamp": firestore.SERVER_TIMESTAMP,
-                                    "message": "Successfully updated remaining posts with AI analysis",
+                                    "message": f"Successfully updated {updated_count} posts with AI analysis",
                                 }
                             )
+
+                            # Verify the update
+                            updated_doc = doc_ref.get()
+                            if updated_doc.exists:
+                                updated_data = updated_doc.to_dict()
+                                updated_metadata = updated_data.get("metadata", [])
+                                logger.info(
+                                    f"Metadata length after Firestore update: {len(updated_metadata)}"
+                                )
+                                if updated_metadata:
+                                    logger.info(
+                                        f"First post in metadata after update: {updated_metadata[0].get('post_id', 'N/A')}"
+                                    )
+                                    logger.info(
+                                        f"AI fields in first post: ai_analysis_results={bool(updated_metadata[0].get('ai_analysis_results'))}, ai_content_description={bool(updated_metadata[0].get('ai_content_description'))}"
+                                    )
                         else:  # skip
                             doc_ref.update(
                                 {
