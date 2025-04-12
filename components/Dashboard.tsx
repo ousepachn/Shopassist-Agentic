@@ -49,6 +49,7 @@ interface PostMetadata {
   media_type: string;
   permalink: string;
   media_url: string;
+  ai_content_description?: string;
   ai_analysis?: {
     description?: string;
     style?: string;
@@ -142,7 +143,8 @@ export function Dashboard() {
             ...post,
             timestamp: post.timestamp instanceof Timestamp 
               ? post.timestamp.toDate() 
-              : new Date(post.timestamp)
+              : new Date(post.timestamp),
+            permalink: post.permalink || `https://www.instagram.com/p/${post.post_id}/`
           }))
         };
         setProfileData(data);
@@ -525,8 +527,13 @@ export function Dashboard() {
                         {profileData.metadata.map((post, index) => (
                           <tr key={index} className="hover:bg-gray-50">
                             <td className="px-6 py-4 text-sm text-gray-500">
-                              <div className="max-w-xs truncate">
-                                {post.caption || 'No title'}
+                              <div className="relative group">
+                                <div className="max-w-xs truncate">
+                                  {post.caption || 'No title'}
+                                </div>
+                                <div className="absolute hidden group-hover:block z-50 w-64 p-2 mt-1 text-sm text-white bg-gray-800 rounded-lg shadow-lg">
+                                  {post.caption || 'No title'}
+                                </div>
                               </div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
@@ -539,19 +546,28 @@ export function Dashboard() {
                               {profileData.timestamp.toLocaleDateString()}
                             </td>
                             <td className="px-6 py-4 text-sm text-gray-500">
-                              <div className="max-w-xs truncate">
-                                {post.ai_analysis?.description || 'No AI analysis'}
+                              <div className="relative group">
+                                <div className="max-w-xs truncate">
+                                  {post.ai_content_description || 'No AI analysis'}
+                                </div>
+                                <div className="absolute hidden group-hover:block z-50 w-64 p-2 mt-1 text-sm text-white bg-gray-800 rounded-lg shadow-lg">
+                                  {post.ai_content_description || 'No AI analysis'}
+                                </div>
                               </div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                              <a
-                                href={post.permalink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:text-blue-800"
-                              >
-                                View Post
-                              </a>
+                              {post.permalink ? (
+                                <a
+                                  href={post.permalink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:text-blue-800"
+                                >
+                                  View Post
+                                </a>
+                              ) : (
+                                <span className="text-gray-400">No link available</span>
+                              )}
                             </td>
                           </tr>
                         ))}
