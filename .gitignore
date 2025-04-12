@@ -42,3 +42,4 @@ build/
 instagram/
 data/
 *.parquet
+.DS_Store

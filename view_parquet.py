@@ -6,7 +6,7 @@ storage_client = storage.Client()
 
 # Get the bucket and blob
 bucket = storage_client.bucket("shopassist-agentic-media-data")
-blob = bucket.blob("instagram/nike/metadata.parquet")
+blob = bucket.blob("instagram/beckybarnicomics/metadata.parquet")
 # Download to a temporary file
 local_path = "/tmp/metadata.parquet"
 blob.download_to_filename(local_path)
