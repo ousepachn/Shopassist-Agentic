@@ -1,4 +1,4 @@
-from instagram_scraper import InstagramScraper
+from scrapers.instagram_scraper import InstagramScraper
 import os
 from dotenv import load_dotenv
 

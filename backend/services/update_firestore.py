@@ -1,7 +1,7 @@
 import os
 from google.cloud import firestore
 from dotenv import load_dotenv
-from instagram_scraper import CloudStorageHandler
+from scrapers.instagram_scraper import CloudStorageHandler
 import numpy as np
 import pandas as pd
 from datetime import datetime

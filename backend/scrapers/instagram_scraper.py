@@ -9,8 +9,8 @@ import pandas as pd
 from tabulate import tabulate
 from google.cloud import storage
 import io
-from media_processor import MediaProcessor
-from image_processor import ImageGridProcessor
+from backend.utils.media_processor import MediaProcessor
+from backend.utils.image_processor import ImageGridProcessor
 import numpy as np
 from dotenv import load_dotenv
 

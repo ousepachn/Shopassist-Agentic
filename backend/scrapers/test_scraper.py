@@ -1,5 +1,5 @@
 import os
-from instagram_scraper import InstagramScraper
+from scrapers.instagram_scraper import InstagramScraper
 from update_firestore import update_firestore_metadata
 import pandas as pd
 

@@ -1,4 +1,4 @@
-from instagram_scraper import CloudStorageHandler
+from scrapers.instagram_scraper import CloudStorageHandler
 import os
 
 
