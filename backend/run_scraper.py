@@ -3,7 +3,7 @@ import argparse
 import os
 import subprocess
 from dotenv import load_dotenv
-from backend.scrapers.instagram_scraper import InstagramScraper
+from .scrapers.instagram_scraper import InstagramScraper
 
 
 def check_gcloud_auth():

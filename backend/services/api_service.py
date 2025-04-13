@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import os
 from dotenv import load_dotenv
-from scrapers.instagram_scraper import InstagramScraper
+from backend.scrapers.instagram_scraper import InstagramScraper
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
@@ -12,6 +12,7 @@ import subprocess
 import logging
 import numpy as np
 import traceback
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -27,17 +28,28 @@ logger.info("API Service starting up...")
 # Load environment variables
 load_dotenv()
 
-# Initialize Firebase Admin
-cred = credentials.Certificate(os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH"))
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Get the project root directory
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+# Initialize Firebase Admin with resolved path
+firebase_creds_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+if firebase_creds_path:
+    # Convert relative path to absolute path
+    if not os.path.isabs(firebase_creds_path):
+        firebase_creds_path = str(PROJECT_ROOT / firebase_creds_path)
+    cred = credentials.Certificate(firebase_creds_path)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+else:
+    logger.error("FIREBASE_SERVICE_ACCOUNT_PATH not found in environment variables")
+    raise ValueError("FIREBASE_SERVICE_ACCOUNT_PATH not found in environment variables")
 
 app = FastAPI()
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this with your Next.js app's domain in production
+    allow_origins=["http://localhost:3000"],  # Next.js development server
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
