@@ -5,6 +5,7 @@ from pinecone import Pinecone
 from google import genai
 from google.genai.types import EmbedContentConfig
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -15,11 +16,27 @@ logger = logging.getLogger(__name__)
 
 class SearchService:
     def __init__(self):
-        # Load environment variables
-        load_dotenv()
+        # Get the project root directory
+        project_root = Path(__file__).parent.parent.parent
+
+        # Load environment variables from .env.local
+        env_path = project_root / ".env.local"
+        if env_path.exists():
+            logger.info(f"Loading environment variables from {env_path}")
+            load_dotenv(env_path)
+        else:
+            logger.warning(
+                f".env.local file not found at {env_path}, using default environment variables"
+            )
+            load_dotenv()
 
         # Initialize Pinecone
-        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        if not pinecone_api_key:
+            logger.error("PINECONE_API_KEY not found in environment variables")
+            raise ValueError("PINECONE_API_KEY not found in environment variables")
+
+        pc = Pinecone(api_key=pinecone_api_key)
         self.index_name = os.getenv("PINECONE_INDEX_NAME", "shopassist-v2")
         self.index = pc.Index(self.index_name)
 
