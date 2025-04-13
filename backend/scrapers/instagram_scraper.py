@@ -233,7 +233,11 @@ class InstagramScraper:
                 if field_value:
                     try:
                         if isinstance(field_value, (int, str)):
-                            timestamp = pd.Timestamp.fromtimestamp(int(field_value))
+                            # Convert to integer if it's a string
+                            if isinstance(field_value, str):
+                                field_value = int(field_value)
+                            # Create timestamp from Unix timestamp
+                            timestamp = pd.Timestamp.fromtimestamp(field_value)
                             print(
                                 f"[DEBUG] Successfully extracted timestamp from {field}: {timestamp}"
                             )
@@ -244,7 +248,7 @@ class InstagramScraper:
                         )
                         continue
 
-            if timestamp is None:
+            if timestamp is None or pd.isna(timestamp):
                 print(f"[WARNING] No valid timestamp found for post {post_id}")
                 # If this post exists in existing metadata, use that timestamp
                 if (

@@ -13,6 +13,7 @@ import logging
 import numpy as np
 import traceback
 from pathlib import Path
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(
@@ -165,6 +166,9 @@ def convert_to_firestore_compatible(data):
     elif isinstance(data, (np.int64, np.int32, np.float64, np.float32)):
         logger.debug(f"Converting NumPy numeric type to Python native: {type(data)}")
         return data.item()
+    elif pd.isna(data):  # Handle pandas NaT and NaN values
+        logger.debug(f"Converting pandas NaT/NaN value to None")
+        return None
     else:
         return data
 
