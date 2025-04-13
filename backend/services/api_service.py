@@ -14,6 +14,7 @@ import numpy as np
 import traceback
 from pathlib import Path
 import pandas as pd
+from backend.services.search_service import SearchService
 
 # Configure logging
 logging.basicConfig(
@@ -94,6 +95,11 @@ class VerifyStatus(BaseModel):
     error: Optional[str] = None
     missing_files: Optional[List[str]] = None
     unreferenced_files: Optional[List[str]] = None
+
+
+class SearchRequest(BaseModel):
+    query: str
+    top_k: Optional[int] = 5
 
 
 def check_gcloud_auth():
@@ -1010,6 +1016,18 @@ async def get_verify_status(username: str):
         return verify_status
 
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/search")
+async def search_posts(request: SearchRequest):
+    try:
+        logger.info(f"Searching posts with query: {request.query}")
+        search_service = SearchService()
+        results = search_service.search_posts(request.query, top_k=request.top_k)
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error searching posts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

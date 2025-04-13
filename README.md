@@ -1,151 +1,224 @@
-# Instagram Media Scraper
+# ShopAssist V2 - Agent-based Scraper
 
-A Python-based Instagram media scraper that downloads images and videos from public Instagram profiles using the RapidAPI Instagram Scraper API. This tool supports downloading single images, videos, and carousel posts with pagination support, and includes AI-powered content analysis using Google Cloud Vertex AI.
+A powerful Instagram scraping and analysis tool that uses AI to process content and enables semantic search through a vector database.
 
 ## Features
-- Download images and videos from public Instagram profiles
-- Support for different types of posts:
-  - Single images
-  - Videos
-  - Carousel/album posts
-- AI-powered content analysis using Google Cloud Vertex AI
-- Pagination support for fetching multiple posts
-- Environment variable configuration for API keys
-- Interactive command-line interface
-- Organized output structure with cloud storage integration
+
+- **Instagram Scraping**: Scrape posts, reels, and stories from Instagram profiles
+- **AI Content Analysis**: Process media content using Google's Vertex AI
+- **Vector Database Integration**: Store and index content in Pinecone for semantic search
+- **Semantic Search**: Find relevant content using natural language queries
+- **API Service**: RESTful API for all functionality
+- **Scheduled Sync**: Automated synchronization with vector database
 
 ## Prerequisites
-- Python 3.x
-- RapidAPI Key (Instagram Scraper API)
-- Google Cloud Project with:
-  - Vertex AI API enabled
-  - Cloud Storage bucket
-  - Service account with appropriate permissions
+
+- Python 3.8+
+- Google Cloud Platform account with Vertex AI enabled
+- Pinecone account
+- Firebase account
+- Instagram API access (via RapidAPI)
 
 ## Installation
 
 1. Clone the repository:
-```bash
-git clone https://github.com/ousepachn/Shopassist-Agentic.git
-cd Shopassist-Agentic
-```
+   ```bash
+   git clone https://github.com/yourusername/ShopAssist-V2.git
+   cd ShopAssist-V2/SA-AgentbasedScraper
+   ```
 
-2. Create and activate a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Unix/macOS
-venv\Scripts\activate     # On Windows
-```
+2. Install dependencies:
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+3. Set up environment variables:
+   Create a `.env.local` file in the project root with the following variables:
+   ```
+   # Firebase
+   FIREBASE_SERVICE_ACCOUNT_PATH=path/to/your/firebase-credentials.json
+   FIREBASE_PROJECT_ID=your-firebase-project-id
+   
+   # Google Cloud
+   GOOGLE_APPLICATION_CREDENTIALS=path/to/your/google-credentials.json
+   GOOGLE_CLOUD_LOCATION=us-central1
+   
+   # Pinecone
+   PINECONE_API_KEY=your-pinecone-api-key
+   PINECONE_INDEX_NAME=shopassist-v2
+   
+   # RapidAPI
+   RAPIDAPI_KEY=your-rapidapi-key
+   ```
 
-4. Create a `.env` file in the project root and add your API keys:
-```
-RAPIDAPI_KEY=your_api_key_here
-```
-
-5. Set up Google Cloud credentials:
-   - Create a service account in your Google Cloud project
-   - Download the service account key JSON file
-   - Set the GOOGLE_APPLICATION_CREDENTIALS environment variable:
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account-key.json"
-```
+4. Authenticate with Google Cloud:
+   ```bash
+   gcloud auth application-default login
+   ```
 
 ## Usage
 
-There are two ways to use the scraper:
+### 1. Scraping Instagram Content
 
-### 1. Basic Scraper (main.py)
-This is the simple version that downloads media files locally:
-
-```bash
-python3 main.py
-```
-
-You will be prompted to:
-- Enter an Instagram username (default: ousepachn)
-- Enter number of posts to download (default: 6)
-
-The media will be downloaded to a folder named `{username}_posts` in your project directory.
-
-### 2. Advanced Scraper with AI (run_scraper.py)
-This version includes cloud storage integration and AI-powered content analysis:
+#### Using the API
 
 ```bash
-# To scrape posts and analyze content
-./run_scraper.py -M scrape -u <username> -m <max_posts>
-
-# To run AI analysis on previously scraped posts
-./run_scraper.py -M ai -u <username>
+curl -X POST "http://localhost:8000/api/scrape" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "recipesbypooh", "max_posts": 50, "process_with_vertex_ai": true}'
 ```
 
-Options:
-- `-M, --mode`: Operation mode (`scrape` or `ai`)
-- `-u, --username`: Instagram username to process
-- `-m, --max-posts`: Maximum number of posts to scrape (default: 50)
+#### Using the Python Module
 
-Example:
+```python
+from backend.scrapers.instagram_scraper import InstagramScraper
+
+# Initialize scraper
+scraper = InstagramScraper(api_key="your-rapidapi-key")
+
+# Scrape profile
+metadata_df = scraper.process_profile("recipesbypooh", max_posts=50)
+```
+
+### 2. Processing Content with AI
+
+#### Using the API
+
 ```bash
-# Scrape 10 posts from Nike's profile
-./run_scraper.py -M scrape -u nike -m 10
-
-# Run AI analysis on previously scraped posts
-./run_scraper.py -M ai -u nike
+curl -X POST "http://localhost:8000/api/process-ai" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "recipesbypooh", "processing_option": "update_remaining"}'
 ```
 
-## Output Structure
+#### Using the Python Module
 
-### Local Storage (main.py)
-```
-username_posts/
-    username_timestamp/
-        post_0_image.jpg      # Single image post
-        post_1_video.mp4      # Video post
-        post_2_album/         # Carousel post
-            image_0.jpg
-            image_1.jpg
-            image_2.jpg
+```python
+from backend.scrapers.instagram_scraper import InstagramScraper
+
+# Initialize scraper
+scraper = InstagramScraper(api_key="your-rapidapi-key")
+
+# Process content with AI
+metadata_df = scraper.run_ai_processing("recipesbypooh", processing_option="update_remaining")
 ```
 
-### Cloud Storage (run_scraper.py)
+### 3. Syncing with Vector Database
+
+#### Using the Scheduler
+
+```bash
+# Run once
+python backend/run_sync_scheduler.py --run-once
+
+# Run with scheduling (every 4 hours)
+python backend/run_sync_scheduler.py --interval 4
+
+# Run for a specific username
+python backend/run_sync_scheduler.py --username recipesbypooh
 ```
-instagram/
-    username/
-        media/
-            post_ABC123_image.jpg     # Single image post
-            post_DEF456_video.mp4     # Video post
-            post_GHI789_album/        # Carousel post
-                image_0.jpg
-                image_1.jpg
-        metadata.parquet              # Post metadata and AI analysis
+
+#### Using the Python Module
+
+```python
+from backend.services.pinecone_sync import PineconeSync
+
+# Initialize sync service
+sync = PineconeSync(username="recipesbypooh")
+
+# Sync to Pinecone
+sync.sync_to_pinecone()
 ```
 
-## AI Analysis
-The tool uses Google Cloud Vertex AI to analyze media content:
-- Image analysis includes:
-  - Detailed description
-  - Style and mood analysis
-  - Text detection
-  - Safety assessment
-- Video analysis (coming soon)
-- Album analysis processes each image individually
+### 4. Searching the Vector Database
 
-## Error Handling
-The scraper includes error handling for:
-- Invalid API keys
-- Network issues
-- Invalid usernames
-- Download failures
-- Rate limiting
-- Cloud storage issues
-- AI processing errors
+#### Using the API
 
-## Contributing
-Feel free to submit issues and enhancement requests!
+```bash
+curl -X POST "http://localhost:8000/api/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "recipe for chocolate cake", "top_k": 5}'
+```
+
+#### Using the Python Module
+
+```python
+from backend.services.search_service import SearchService
+
+# Initialize search service
+search_service = SearchService()
+
+# Search for posts
+results = search_service.search_posts("recipe for chocolate cake", top_k=5)
+
+# Display results
+for result in results:
+    print(f"Score: {result['score']}")
+    print(f"Content: {result['content']}")
+    print(f"Caption: {result['caption']}")
+    print("---")
+```
+
+#### Using the CLI
+
+```bash
+# Basic search
+python -m backend.services.search_service "recipe for chocolate cake"
+
+# Search with options
+python -m backend.services.search_service "recipe for chocolate cake" --top-k 10 --verbose
+```
+
+## API Endpoints
+
+### Scraping
+
+- `POST /api/scrape`: Scrape Instagram profile
+  - Request body: `{"username": "string", "max_posts": int, "process_with_vertex_ai": bool}`
+  - Response: `{"status": "string", "message": "string"}`
+
+### AI Processing
+
+- `POST /api/process-ai`: Process content with AI
+  - Request body: `{"username": "string", "processing_option": "string"}`
+  - Response: `{"status": "string", "message": "string"}`
+
+### Status
+
+- `GET /api/status/{username}`: Get processing status
+  - Response: `{"status": "string", "message": "string", "current_post": int, "total_posts": int}`
+
+### Search
+
+- `POST /api/search`: Search for posts
+  - Request body: `{"query": "string", "top_k": int}`
+  - Response: `{"results": [{"score": float, "username": "string", "content": "string", "caption": "string", "timestamp": "string"}]}`
+
+## Architecture
+
+The system consists of several components:
+
+1. **Instagram Scraper**: Fetches content from Instagram profiles
+2. **AI Processor**: Analyzes media content using Google's Vertex AI
+3. **Vector Database**: Stores and indexes content in Pinecone
+4. **Search Service**: Enables semantic search through the vector database
+5. **API Service**: Provides RESTful API for all functionality
+6. **Sync Scheduler**: Automatically synchronizes content with the vector database
+
+## Development
+
+### Running the API Server
+
+```bash
+cd backend
+uvicorn services.api_service:app --reload
+```
+
+### Running Tests
+
+```bash
+python -m pytest
+```
 
 ## License
-This project is licensed under the MIT License - see the LICENSE file for details. 
+
+[MIT License](LICENSE) 
