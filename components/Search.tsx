@@ -19,6 +19,7 @@ export function Search() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [topK, setTopK] = useState(5);
+  const [instagramRecipientId, setInstagramRecipientId] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +41,11 @@ export function Search() {
       return;
     }
 
+    if (!instagramRecipientId.trim()) {
+      setError('Please enter an Instagram recipient ID');
+      return;
+    }
+
     try {
       setIsLoading(true);
       setError(null);
@@ -51,7 +57,8 @@ export function Search() {
         },
         body: JSON.stringify({
           query,
-          top_k: topK
+          top_k: topK,
+          instagram_recipient_id: instagramRecipientId
         })
       });
 
@@ -113,6 +120,20 @@ export function Search() {
                     onChange={(e) => setQuery(e.target.value)}
                     className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
                     placeholder="e.g., recipe for chocolate cake"
+                  />
+                </div>
+                
+                <div>
+                  <label htmlFor="instagramRecipientId" className="block text-sm font-medium text-gray-700">
+                    Instagram Recipient ID
+                  </label>
+                  <input
+                    type="text"
+                    id="instagramRecipientId"
+                    value={instagramRecipientId}
+                    onChange={(e) => setInstagramRecipientId(e.target.value)}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                    placeholder="Enter Instagram recipient ID"
                   />
                 </div>
                 

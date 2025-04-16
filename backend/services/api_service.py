@@ -15,6 +15,7 @@ import traceback
 from pathlib import Path
 import pandas as pd
 from backend.services.search_service import SearchService
+import httpx
 
 # Configure logging
 logging.basicConfig(
@@ -100,6 +101,7 @@ class VerifyStatus(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
+    instagram_recipient_id: str
 
 
 def check_gcloud_auth():
@@ -1019,13 +1021,72 @@ async def get_verify_status(username: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def send_instagram_message(recipient_id: str, message: str) -> dict:
+    """
+    Send a message to an Instagram user using the Instagram Graph API.
+
+    Args:
+        recipient_id: The Instagram ID of the message recipient
+        message: The message text to send
+
+    Returns:
+        dict: The API response
+    """
+    try:
+        instagram_token = os.getenv("INSTAGRAM_USER_ACCESS_TOKEN")
+        if not instagram_token:
+            raise ValueError(
+                "INSTAGRAM_USER_ACCESS_TOKEN not found in environment variables"
+            )
+
+        sender_id = os.getenv("INSTAGRAM_SENDER_ID")
+        if not sender_id:
+            raise ValueError("INSTAGRAM_SENDER_ID not found in environment variables")
+
+        url = f"https://graph.instagram.com/v22.0/{sender_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {instagram_token}",
+            "Content-Type": "application/json",
+        }
+        data = {"recipient": {"id": recipient_id}, "message": {"text": message}}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            return response.json()
+
+    except Exception as e:
+        logger.error(f"Error sending Instagram message: {str(e)}")
+        raise
+
+
 @app.post("/api/search")
 async def search_posts(request: SearchRequest):
     try:
         logger.info(f"Searching posts with query: {request.query}")
         search_service = SearchService()
         results = search_service.search_posts(request.query, top_k=request.top_k)
-        return {"results": results}
+
+        # Format a simple message with just the first result
+        if results:
+            first_result = results[0]
+            message = (
+                f"Found: {first_result['username']} - {first_result['caption'][:50]}..."
+            )
+        else:
+            message = f"No results found for: {request.query}"
+
+        # Ensure message is not longer than 100 characters
+        message = message[:100]
+
+        # Send the message to Instagram
+        try:
+            await send_instagram_message(request.instagram_recipient_id, message)
+            return {"results": results, "message_sent": True}
+        except Exception as e:
+            logger.error(f"Error sending Instagram message: {str(e)}")
+            return {"results": results, "message_sent": False, "error": str(e)}
+
     except Exception as e:
         logger.error(f"Error searching posts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
