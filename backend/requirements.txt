@@ -15,3 +15,4 @@ firebase-admin>=6.2.0
 pinecone>=0.1.0  # for vector database
 schedule>=1.2.0  # for scheduling sync jobs
 google-cloud-aiplatform>=1.36.0  # for text embeddings 
+vertexai>=0.0.1  # for Gemini models 

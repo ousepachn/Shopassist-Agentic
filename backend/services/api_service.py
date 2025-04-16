@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import os
 from dotenv import load_dotenv
 from backend.scrapers.instagram_scraper import InstagramScraper
@@ -16,6 +16,9 @@ from pathlib import Path
 import pandas as pd
 from backend.services.search_service import SearchService
 import httpx
+from google.cloud import aiplatform
+from vertexai.generative_models import GenerativeModel, Part
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -1033,14 +1036,21 @@ async def send_instagram_message(recipient_id: str, message: str) -> dict:
         dict: The API response
     """
     try:
+        logger.info(f"Preparing to send Instagram message to recipient: {recipient_id}")
+        logger.debug(f"Message content: {message[:100]}...")
+
         instagram_token = os.getenv("INSTAGRAM_USER_ACCESS_TOKEN")
         if not instagram_token:
+            logger.error(
+                "INSTAGRAM_USER_ACCESS_TOKEN not found in environment variables"
+            )
             raise ValueError(
                 "INSTAGRAM_USER_ACCESS_TOKEN not found in environment variables"
             )
 
         sender_id = os.getenv("INSTAGRAM_SENDER_ID")
         if not sender_id:
+            logger.error("INSTAGRAM_SENDER_ID not found in environment variables")
             raise ValueError("INSTAGRAM_SENDER_ID not found in environment variables")
 
         url = f"https://graph.instagram.com/v22.0/{sender_id}/messages"
@@ -1048,47 +1058,185 @@ async def send_instagram_message(recipient_id: str, message: str) -> dict:
             "Authorization": f"Bearer {instagram_token}",
             "Content-Type": "application/json",
         }
+
+        # Format the message to ensure links are properly recognized
+        # Instagram will automatically detect URLs in the message
         data = {"recipient": {"id": recipient_id}, "message": {"text": message}}
+
+        logger.info(f"Sending request to Instagram API: {url}")
+        logger.debug(f"Request headers: {headers}")
+        logger.debug(f"Request data: {data}")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data)
             response.raise_for_status()
-            return response.json()
+            response_data = response.json()
+            logger.info(f"Instagram API response: {response_data}")
+
+            # Add a small delay to avoid rate limiting
+            await asyncio.sleep(1)
+
+            return response_data
 
     except Exception as e:
         logger.error(f"Error sending Instagram message: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
+
+
+def generate_gemini_response(results: List[Dict[str, Any]], query: str) -> List[str]:
+    """
+    Generate a response using Google Gemini 2.0 Flash based on search results.
+
+    Args:
+        results: List of search results from RAG retrieval
+        query: The original search query
+
+    Returns:
+        List[str]: A list of messages to send, with the first being an introduction
+                  and subsequent messages containing individual links
+    """
+    try:
+        logger.info(
+            f"Generating Gemini response for query: '{query}' with {len(results)} results"
+        )
+
+        # Initialize Vertex AI
+        project_id = os.getenv("FIREBASE_PROJECT_ID")
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        logger.info(
+            f"Initializing Vertex AI with project_id: {project_id}, location: {location}"
+        )
+        aiplatform.init(project=project_id, location=location)
+
+        # Initialize Gemini model
+        logger.info("Initializing Gemini 2.0 Flash model")
+        model = GenerativeModel("gemini-1.5-flash-002")
+
+        # Group results by username
+        logger.info("Grouping search results by username")
+        grouped_results = {}
+        for result in results:
+            username = result.get("username", "Unknown")
+            if username not in grouped_results:
+                grouped_results[username] = []
+            grouped_results[username].append(result)
+
+        logger.info(f"Grouped results by {len(grouped_results)} usernames")
+
+        # Create a prompt for Gemini to generate an introduction message
+        logger.info("Creating prompt for Gemini introduction message")
+        intro_prompt = f"""
+        I searched for "{query}" and found the following Instagram posts. 
+        Please create a very short, friendly introduction message (max 50 characters) 
+        that tells the user I found posts matching their criteria.
+        
+        Here are the search results:
+        {json.dumps(grouped_results, indent=2)}
+        """
+
+        logger.debug(f"Gemini intro prompt: {intro_prompt[:500]}...")
+
+        # Generate introduction with Gemini
+        logger.info("Generating introduction with Gemini")
+        intro_response = model.generate_content(intro_prompt)
+
+        # Extract the text from the response
+        intro_text = intro_response.text
+        logger.info(f"Generated introduction: {intro_text}")
+
+        # Filter results by relevance score
+        high_relevance_results = [r for r in results if r.get("score", 0) > 0.8]
+        logger.info(
+            f"Found {len(high_relevance_results)} results with relevance score > 0.8"
+        )
+
+        # If no high relevance results, take top 2
+        if not high_relevance_results and results:
+            logger.info("No high relevance results, taking top 2 results")
+            high_relevance_results = sorted(
+                results, key=lambda x: x.get("score", 0), reverse=True
+            )[:2]
+
+        # Create messages for each result
+        messages = [intro_text]
+
+        for result in high_relevance_results:
+            username = result.get("username", "Unknown")
+            post_url = result.get("post_url", "")
+            caption = (
+                result.get("caption", "")[:50] + "..."
+                if result.get("caption")
+                else "No caption"
+            )
+
+            # Create a message for each result
+            result_message = f"{username}: {post_url}"
+            messages.append(result_message)
+            logger.info(f"Added message for {username}: {post_url[:30]}...")
+
+        logger.info(f"Generated {len(messages)} messages in total")
+        return messages
+
+    except Exception as e:
+        logger.error(f"Error generating Gemini response: {str(e)}")
+        logger.error(traceback.format_exc())
+        # Fallback to a simple response if Gemini fails
+        fallback_response = [
+            f"Found {len(results)} results for '{query}'. Check the app for details."
+        ]
+        logger.info(f"Using fallback response: {fallback_response[0]}")
+        return fallback_response
 
 
 @app.post("/api/search")
 async def search_posts(request: SearchRequest):
     try:
-        logger.info(f"Searching posts with query: {request.query}")
+        logger.info(
+            f"Searching posts with query: '{request.query}', top_k: {request.top_k}, recipient_id: {request.instagram_recipient_id}"
+        )
         search_service = SearchService()
         results = search_service.search_posts(request.query, top_k=request.top_k)
+        logger.info(f"Search returned {len(results)} results")
 
-        # Format a simple message with just the first result
+        # Generate a response using Gemini
         if results:
-            first_result = results[0]
-            message = (
-                f"Found: {first_result['username']} - {first_result['caption'][:50]}..."
-            )
+            logger.info("Generating response with Gemini for search results")
+            messages = generate_gemini_response(results, request.query)
+            logger.info(f"Generated {len(messages)} messages")
         else:
-            message = f"No results found for: {request.query}"
+            logger.warning(f"No results found for query: '{request.query}'")
+            messages = [f"No results found for: {request.query}"]
 
-        # Ensure message is not longer than 100 characters
-        message = message[:100]
-
-        # Send the message to Instagram
+        # Send the messages to Instagram
         try:
-            await send_instagram_message(request.instagram_recipient_id, message)
-            return {"results": results, "message_sent": True}
+            logger.info(
+                f"Sending {len(messages)} messages to Instagram recipient: {request.instagram_recipient_id}"
+            )
+
+            # Send each message with a small delay between them
+            for i, message in enumerate(messages):
+                logger.info(f"Sending message {i + 1}/{len(messages)}")
+                await send_instagram_message(request.instagram_recipient_id, message)
+
+                # Add a small delay between messages (except for the last one)
+                if i < len(messages) - 1:
+                    await asyncio.sleep(1)
+
+            logger.info("All messages sent successfully")
+            return {
+                "results": results,
+                "messages_sent": True,
+                "message_count": len(messages),
+            }
         except Exception as e:
-            logger.error(f"Error sending Instagram message: {str(e)}")
-            return {"results": results, "message_sent": False, "error": str(e)}
+            logger.error(f"Error sending Instagram messages: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {"results": results, "messages_sent": False, "error": str(e)}
 
     except Exception as e:
         logger.error(f"Error searching posts: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
