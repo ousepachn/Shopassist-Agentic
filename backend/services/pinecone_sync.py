@@ -156,6 +156,8 @@ class PineconeSync:
                         "content": item.get("ai_content_description", ""),
                         "caption": item.get("caption", ""),
                         "last_updated": datetime.now().isoformat(),
+                        "post_url": f"https://www.instagram.com/p/{item.get('post_id', '')}/",
+                        "gcs_metadata_url": f"gs://shopassist-agentic-media-data/instagram/{item.get('username', '')}/metadata.parquet",
                     },
                 }
                 vectors.append(vector)

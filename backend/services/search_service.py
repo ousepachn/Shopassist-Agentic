@@ -94,6 +94,8 @@ class SearchService:
                     "content": match.metadata.get("content", ""),
                     "caption": match.metadata.get("caption", ""),
                     "timestamp": match.metadata.get("timestamp", ""),
+                    "post_url": match.metadata.get("post_url", ""),
+                    "gcs_metadata_url": match.metadata.get("gcs_metadata_url", ""),
                 }
                 results.append(result)
 
@@ -155,6 +157,8 @@ if __name__ == "__main__":
             print(f"Content: {result['content']}")
             print(f"Caption: {result['caption']}")
             print(f"Timestamp: {result['timestamp']}")
+            print(f"Post URL: {result['post_url']}")
+            print(f"GCS Metadata URL: {result['gcs_metadata_url']}")
 
     except Exception as e:
         print(f"Error: {str(e)}")

@@ -12,6 +12,8 @@ interface SearchResult {
   content: string;
   caption: string;
   timestamp: string;
+  post_url: string;
+  gcs_metadata_url: string;
 }
 
 export function Search() {
@@ -195,6 +197,9 @@ export function Search() {
                           <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Date
                           </th>
+                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Post Link
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
@@ -228,6 +233,20 @@ export function Search() {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                               {new Date(result.timestamp).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                              {result.post_url ? (
+                                <a
+                                  href={result.post_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:text-blue-800 hover:underline"
+                                >
+                                  View Post
+                                </a>
+                              ) : (
+                                <span className="text-gray-400">No link available</span>
+                              )}
                             </td>
                           </tr>
                         ))}
