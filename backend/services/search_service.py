@@ -46,6 +46,28 @@ class SearchService:
             "GOOGLE_CLOUD_LOCATION", "us-central1"
         )
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
+
+        # Set up Google Cloud credentials
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            logger.error(
+                "GOOGLE_APPLICATION_CREDENTIALS not found in environment variables"
+            )
+            raise ValueError(
+                "GOOGLE_APPLICATION_CREDENTIALS not found in environment variables"
+            )
+
+        # Convert relative path to absolute path if necessary
+        if not os.path.isabs(credentials_path):
+            credentials_path = str(project_root / credentials_path)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+
+        # Verify that the credentials file exists
+        if not os.path.exists(credentials_path):
+            logger.error(f"Credentials file not found at {credentials_path}")
+            raise FileNotFoundError(f"Credentials file not found at {credentials_path}")
+
+        logger.info(f"Using Google Cloud credentials from: {credentials_path}")
         self.genai_client = genai.Client()
 
     def create_embedding(self, text: str) -> List[float]:
