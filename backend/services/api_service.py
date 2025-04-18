@@ -145,13 +145,36 @@ def check_gcloud_auth():
             logger.info("Running in Cloud Run environment")
             return True
 
-        # For local development, check application default credentials
-        creds_path = os.path.expanduser(
-            "~/.config/gcloud/application_default_credentials.json"
-        )
-        if not os.path.exists(creds_path):
-            logger.warning("Application default credentials not found")
-            return False
+        # For local development, check multiple credential locations
+        # 1. Check if GOOGLE_APPLICATION_CREDENTIALS is set
+        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+        # 2. If not set, check in the /credentials folder
+        if not creds_path or not os.path.exists(creds_path):
+            # Try the /credentials folder
+            container_creds_path = "/app/credentials/service-account.json"
+            if os.path.exists(container_creds_path):
+                logger.info(f"Using credentials from {container_creds_path}")
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = container_creds_path
+                return True
+
+            # Try the local credentials folder
+            local_creds_path = os.path.join(
+                PROJECT_ROOT, "credentials", "service-account.json"
+            )
+            if os.path.exists(local_creds_path):
+                logger.info(f"Using credentials from {local_creds_path}")
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_creds_path
+                return True
+
+        # 3. Fall back to application default credentials
+        if not creds_path or not os.path.exists(creds_path):
+            creds_path = os.path.expanduser(
+                "~/.config/gcloud/application_default_credentials.json"
+            )
+            if not os.path.exists(creds_path):
+                logger.warning("Application default credentials not found")
+                return False
 
         # Check if project ID is set
         try:
