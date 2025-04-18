@@ -39,16 +39,37 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # Initialize Firebase Admin with resolved path
 firebase_creds_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
-if firebase_creds_path:
-    # Convert relative path to absolute path
+firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+
+if firebase_creds_json:
+    # Use credentials from environment variable
+    try:
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        logger.info("Firebase initialized with credentials from environment variable")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse FIREBASE_CREDENTIALS_JSON: {str(e)}")
+        raise ValueError("Invalid FIREBASE_CREDENTIALS_JSON format")
+elif firebase_creds_path:
+    # Fall back to file-based credentials
     if not os.path.isabs(firebase_creds_path):
         firebase_creds_path = str(PROJECT_ROOT / firebase_creds_path)
+    if not os.path.exists(firebase_creds_path):
+        logger.error(f"Firebase credentials file not found at: {firebase_creds_path}")
+        raise ValueError(
+            f"Firebase credentials file not found at: {firebase_creds_path}"
+        )
     cred = credentials.Certificate(firebase_creds_path)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
+    logger.info("Firebase initialized with credentials from file")
 else:
-    logger.error("FIREBASE_SERVICE_ACCOUNT_PATH not found in environment variables")
-    raise ValueError("FIREBASE_SERVICE_ACCOUNT_PATH not found in environment variables")
+    logger.error("No Firebase credentials found in environment variables")
+    raise ValueError(
+        "No Firebase credentials found. Please set either FIREBASE_CREDENTIALS_JSON or FIREBASE_SERVICE_ACCOUNT_PATH"
+    )
 
 app = FastAPI()
 
@@ -108,27 +129,48 @@ class SearchRequest(BaseModel):
 
 
 def check_gcloud_auth():
-    """Check if gcloud is authenticated and configured correctly"""
+    """Check if Google Cloud authentication is available"""
     try:
-        # Check if gcloud is installed
-        subprocess.run(["gcloud", "--version"], check=True, capture_output=True)
+        # In Cloud Run, service account credentials are automatically available
+        project_id = os.getenv("FIREBASE_PROJECT_ID")
+        if not project_id:
+            logger.error("FIREBASE_PROJECT_ID not set")
+            return False
 
-        # Check if application-default credentials exist
-        credentials_path = os.path.expanduser(
+        # Check if we're running in Cloud Run
+        is_cloud_run = os.getenv("K_SERVICE") is not None
+
+        if is_cloud_run:
+            # In Cloud Run, authentication is handled automatically
+            logger.info("Running in Cloud Run environment")
+            return True
+
+        # For local development, check application default credentials
+        creds_path = os.path.expanduser(
             "~/.config/gcloud/application_default_credentials.json"
         )
-        if not os.path.exists(credentials_path):
+        if not os.path.exists(creds_path):
+            logger.warning("Application default credentials not found")
             return False
 
         # Check if project ID is set
-        result = subprocess.run(
-            ["gcloud", "config", "get-value", "project"], capture_output=True, text=True
-        )
-        if not result.stdout.strip():
+        try:
+            result = subprocess.run(
+                ["gcloud", "config", "get-value", "project"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            if not result.stdout.strip():
+                logger.warning("No Google Cloud project ID configured")
+                return False
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to get Google Cloud project ID")
             return False
 
         return True
-    except subprocess.CalledProcessError:
+    except Exception as e:
+        logger.error(f"Error checking Google Cloud auth: {str(e)}")
         return False
 
 

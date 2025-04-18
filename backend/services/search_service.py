@@ -40,13 +40,6 @@ class SearchService:
         self.index_name = os.getenv("PINECONE_INDEX_NAME", "shopassist-v2")
         self.index = pc.Index(self.index_name)
 
-        # Initialize Google AI client
-        os.environ["GOOGLE_CLOUD_PROJECT"] = os.getenv("FIREBASE_PROJECT_ID")
-        os.environ["GOOGLE_CLOUD_LOCATION"] = os.getenv(
-            "GOOGLE_CLOUD_LOCATION", "us-central1"
-        )
-        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
-
         # Set up Google Cloud credentials
         credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if not credentials_path:
@@ -68,12 +61,36 @@ class SearchService:
             raise FileNotFoundError(f"Credentials file not found at {credentials_path}")
 
         logger.info(f"Using Google Cloud credentials from: {credentials_path}")
-        self.genai_client = genai.Client()
+
+        # Get Google Cloud configuration from environment variables
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "True").lower() == "true"
+
+        if not project_id:
+            logger.error("GOOGLE_CLOUD_PROJECT not found in environment variables")
+            raise ValueError("GOOGLE_CLOUD_PROJECT not found in environment variables")
+
+        # Initialize the Google AI client with environment variables
+        if use_vertexai:
+            logger.info(
+                f"Initializing Google AI client with Vertex AI (project: {project_id}, location: {location})"
+            )
+            self.genai_client = genai.Client(
+                project=project_id, location=location, vertexai=True
+            )
+        else:
+            logger.info(
+                f"Initializing Google AI client without Vertex AI (project: {project_id}, location: {location})"
+            )
+            self.genai_client = genai.Client(project=project_id, location=location)
 
     def create_embedding(self, text: str) -> List[float]:
         """Create embedding using Google's text-embedding-005 model."""
         try:
             logger.info(f"Creating embedding for text: {text[:100]}...")
+
+            # Get embeddings using text-embedding-005 model
             response = self.genai_client.models.embed_content(
                 model="text-embedding-005",
                 contents=[text],

@@ -1,0 +1,32 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/shopassist-api', '.']
+
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/shopassist-api']
+
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'shopassist-api'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/shopassist-api'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--set-env-vars'
+      - 'FIREBASE_PROJECT_ID=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,PINECONE_INDEX_NAME=shopassist-v2,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_GENAI_USE_VERTEXAI=True'
+      - '--set-secrets'
+      - 'FIREBASE_CREDENTIALS_JSON=firebase-credentials:latest,RAPIDAPI_KEY=rapidapi-key:latest,PINECONE_API_KEY=pinecone-key:latest,INSTAGRAM_USER_ACCESS_TOKEN=instagram-token:latest'
+
+images:
+  - 'gcr.io/$PROJECT_ID/shopassist-api' 
