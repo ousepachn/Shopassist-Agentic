@@ -211,6 +211,8 @@ class PineconeSync:
         """Create embeddings using Google's text-embedding-005 model."""
         try:
             logger.info(f"Creating embeddings for {len(texts)} texts")
+
+            # Get embeddings using text-embedding-005 model
             response = self.genai_client.models.embed_content(
                 model="text-embedding-005",
                 contents=texts,
@@ -219,7 +221,11 @@ class PineconeSync:
                     output_dimensionality=768,
                 ),
             )
-            return [embedding.values for embedding in response.embeddings]
+
+            # Extract embedding values from response
+            embeddings = [embedding.values for embedding in response.embeddings]
+            logger.info(f"Successfully created {len(embeddings)} embeddings")
+            return embeddings
         except Exception as e:
             logger.error(f"Error creating embeddings: {str(e)}")
             raise
