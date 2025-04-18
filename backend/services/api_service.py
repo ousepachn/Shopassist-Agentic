@@ -147,93 +147,155 @@ class SearchRequest(BaseModel):
 def check_gcloud_auth():
     """Check if Google Cloud authentication is available"""
     try:
-        # In Cloud Run, service account credentials are automatically available
-        project_id = os.getenv("FIREBASE_PROJECT_ID")
-        if not project_id:
-            logger.error("FIREBASE_PROJECT_ID not set")
+        # Check if we're in a Docker container
+        is_docker = os.path.exists("/.dockerenv")
+
+        # Check for service account credentials
+        creds_paths = [
+            # Docker container paths
+            "/app/credentials/service-account.json",
+            "/app/credentials/instagram-scraper-service-account.json",
+            # Local paths
+            os.path.join(PROJECT_ROOT, "credentials", "service-account.json"),
+            os.path.join(
+                PROJECT_ROOT, "credentials", "instagram-scraper-service-account.json"
+            ),
+            # Environment variable path
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+        ]
+
+        # Filter out empty paths
+        creds_paths = [p for p in creds_paths if p]
+
+        # Check each path
+        for path in creds_paths:
+            if os.path.exists(path):
+                logger.info(f"Using Google Cloud credentials from: {path}")
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+                return True
+
+        # If we're in Docker, we can't use gcloud CLI
+        if is_docker:
+            logger.error("Running in Docker but no service account credentials found.")
+            logger.error("Please ensure one of the following files exists:")
+            for path in creds_paths:
+                logger.error(f"  - {path}")
             return False
 
-        # Check if we're running in Cloud Run
-        is_cloud_run = os.getenv("K_SERVICE") is not None
+        # For local development, try gcloud CLI
+        try:
+            # Check if gcloud is installed
+            subprocess.run(["gcloud", "--version"], check=True, capture_output=True)
 
-        if is_cloud_run:
-            # In Cloud Run, authentication is handled automatically
-            logger.info("Running in Cloud Run environment")
-            return True
-
-        # For local development, check multiple credential locations
-        # 1. Check if GOOGLE_APPLICATION_CREDENTIALS is set
-        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-
-        # 2. If not set, check in the /credentials folder
-        if not creds_path or not os.path.exists(creds_path):
-            # Try the /credentials folder
-            container_creds_path = "/app/credentials/service-account.json"
-            if os.path.exists(container_creds_path):
-                logger.info(f"Using credentials from {container_creds_path}")
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = container_creds_path
-                return True
-
-            # Try the local credentials folder
-            local_creds_path = os.path.join(
-                PROJECT_ROOT, "credentials", "service-account.json"
-            )
-            if os.path.exists(local_creds_path):
-                logger.info(f"Using credentials from {local_creds_path}")
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_creds_path
-                return True
-
-        # 3. Fall back to application default credentials
-        if not creds_path or not os.path.exists(creds_path):
-            creds_path = os.path.expanduser(
+            # Check if application-default credentials exist
+            credentials_path = os.path.expanduser(
                 "~/.config/gcloud/application_default_credentials.json"
             )
-            if not os.path.exists(creds_path):
-                logger.warning("Application default credentials not found")
+            if not os.path.exists(credentials_path):
+                logger.error("Application Default Credentials not found. Please run:")
+                logger.error("gcloud auth application-default login")
                 return False
 
-        # Instead of using gcloud command, directly check if the credentials file exists and is valid
-        if os.path.exists(creds_path):
-            try:
-                # Try to load the credentials file to verify it's valid
-                with open(creds_path, "r") as f:
-                    json.load(f)  # This will raise an exception if the JSON is invalid
-                logger.info(f"Using credentials from {creds_path}")
-                return True
-            except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Error loading credentials file: {str(e)}")
+            # Check if project ID is set
+            result = subprocess.run(
+                ["gcloud", "config", "get-value", "project"],
+                capture_output=True,
+                text=True,
+            )
+            if not result.stdout.strip():
+                logger.error("No default project set. Please run:")
+                logger.error("gcloud config set project YOUR_PROJECT_ID")
                 return False
 
-        return False
+            return True
+        except subprocess.CalledProcessError:
+            logger.error("gcloud CLI not found. Please install the Google Cloud CLI:")
+            logger.error("https://cloud.google.com/sdk/docs/install")
+            return False
     except Exception as e:
-        logger.error(f"Error checking Google Cloud auth: {str(e)}")
+        logger.error(f"Error checking Google Cloud authentication: {str(e)}")
         return False
 
 
 def setup_vertex_ai():
-    """Ensure Vertex AI is properly set up"""
+    """Set up Vertex AI client and return project ID"""
     try:
-        # Get project ID from gcloud config
-        result = subprocess.run(
-            ["gcloud", "config", "get-value", "project"], capture_output=True, text=True
-        )
-        project_id = result.stdout.strip()
+        # Check if we're in a Docker container
+        is_docker = os.path.exists("/.dockerenv")
 
-        # Check if Vertex AI API is enabled
-        services = subprocess.run(
-            ["gcloud", "services", "list", "--format=value(NAME)"],
-            capture_output=True,
-            text=True,
-        ).stdout
+        # Get project ID from environment variable first
+        project_id = os.getenv("FIREBASE_PROJECT_ID")
 
-        if "aiplatform.googleapis.com" not in services:
-            subprocess.run(
-                ["gcloud", "services", "enable", "aiplatform.googleapis.com"],
-                check=True,
+        # If not set, try to get it from the service account file
+        if not project_id:
+            # Check for service account credentials
+            creds_paths = [
+                # Docker container paths
+                "/app/credentials/service-account.json",
+                "/app/credentials/instagram-scraper-service-account.json",
+                # Local paths
+                os.path.join(PROJECT_ROOT, "credentials", "service-account.json"),
+                os.path.join(
+                    PROJECT_ROOT,
+                    "credentials",
+                    "instagram-scraper-service-account.json",
+                ),
+                # Environment variable path
+                os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+            ]
+
+            # Filter out empty paths
+            creds_paths = [p for p in creds_paths if p]
+
+            # Check each path
+            for path in creds_paths:
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r") as f:
+                            creds_data = json.load(f)
+                            if "project_id" in creds_data:
+                                project_id = creds_data["project_id"]
+                                logger.info(
+                                    f"Using project ID from service account: {project_id}"
+                                )
+                                break
+                    except (json.JSONDecodeError, IOError) as e:
+                        logger.warning(
+                            f"Error reading credentials file {path}: {str(e)}"
+                        )
+
+        # If we're in Docker and still don't have a project ID, we can't proceed
+        if is_docker and not project_id:
+            logger.error("Running in Docker but couldn't determine project ID.")
+            logger.error(
+                "Please ensure FIREBASE_PROJECT_ID is set or a valid service account file exists."
             )
+            return None
 
+        # For local development, try gcloud CLI if we don't have a project ID
+        if not project_id and not is_docker:
+            try:
+                result = subprocess.run(
+                    ["gcloud", "config", "get-value", "project"],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.stdout.strip():
+                    project_id = result.stdout.strip()
+                    logger.info(f"Using project ID from gcloud: {project_id}")
+            except subprocess.CalledProcessError:
+                logger.warning("Failed to get project ID from gcloud CLI")
+
+        if not project_id:
+            logger.error("Could not determine Google Cloud project ID")
+            return None
+
+        # Set up Vertex AI client
+        aiplatform.init(project=project_id, location="us-central1")
+        logger.info(f"Vertex AI client initialized with project: {project_id}")
         return project_id
-    except subprocess.CalledProcessError:
+    except Exception as e:
+        logger.error(f"Error setting up Vertex AI: {str(e)}")
         return None
 
 
@@ -1321,4 +1383,11 @@ async def search_posts(request: SearchRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("API Service starting up...")
+
+    # Initialize Firebase
+    cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+    logger.info(f"Firebase initialized with credentials from file: {cred_path}")
+
+    # Run the server
+    uvicorn.run(app, host="0.0.0.0", port=8080)

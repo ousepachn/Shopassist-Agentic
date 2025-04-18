@@ -1,39 +1,40 @@
-# Use Python 3.10 slim image
-FROM python:3.10-slim
+# Use Python 3.11 slim image
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and Google Cloud SDK
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    curl \
+    gnupg \
+    lsb-release \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - \
+    && apt-get update && apt-get install -y google-cloud-sdk \
     && rm -rf /var/lib/apt/lists/*
+
+# Create entrypoint script
+RUN echo '#!/bin/sh\n\
+if [ -n "$GOOGLE_CLOUD_PROJECT" ]; then\n\
+    gcloud config set project $GOOGLE_CLOUD_PROJECT\n\
+fi\n\
+exec "$@"' > /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Copy requirements first to leverage Docker cache
 COPY backend/requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the backend directory
-COPY backend/ /app/backend/
-
-# Create credentials directory
-RUN mkdir -p /app/credentials
+# Copy the rest of the application
+COPY . .
 
 # Set environment variables
-ENV PORT=8080
-ENV HOST=0.0.0.0
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
 ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
-ENV GOOGLE_CLOUD_PROJECT=shopassist-agentic
-ENV GOOGLE_CLOUD_LOCATION=us-central1
-ENV GOOGLE_GENAI_USE_VERTEXAI=True
-ENV INSTAGRAM_USER_ACCESS_TOKEN=${INSTAGRAM_USER_ACCESS_TOKEN}
 
 # Expose the port
 EXPOSE 8080
 
-# Run the application using JSON format for better signal handling
-CMD ["uvicorn", "backend.services.api_service:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"] 
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python", "-m", "backend.services.api_service"] 
