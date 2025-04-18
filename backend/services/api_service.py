@@ -192,22 +192,19 @@ def check_gcloud_auth():
                 logger.warning("Application default credentials not found")
                 return False
 
-        # Check if project ID is set
-        try:
-            result = subprocess.run(
-                ["gcloud", "config", "get-value", "project"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            if not result.stdout.strip():
-                logger.warning("No Google Cloud project ID configured")
+        # Instead of using gcloud command, directly check if the credentials file exists and is valid
+        if os.path.exists(creds_path):
+            try:
+                # Try to load the credentials file to verify it's valid
+                with open(creds_path, "r") as f:
+                    json.load(f)  # This will raise an exception if the JSON is invalid
+                logger.info(f"Using credentials from {creds_path}")
+                return True
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error(f"Error loading credentials file: {str(e)}")
                 return False
-        except subprocess.CalledProcessError:
-            logger.warning("Failed to get Google Cloud project ID")
-            return False
 
-        return True
+        return False
     except Exception as e:
         logger.error(f"Error checking Google Cloud auth: {str(e)}")
         return False
