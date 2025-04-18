@@ -1,21 +1,24 @@
+version: '3'
+
 services:
   api:
     build:
       context: .
       args:
-        - INSTAGRAM_USER_ACCESS_TOKEN=${INSTAGRAM_USER_ACCESS_TOKEN:-default_token}
-        - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-default_project}
-        - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
-        - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-True}
+        - INSTAGRAM_USER_ACCESS_TOKEN=${INSTAGRAM_USER_ACCESS_TOKEN}
+        - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+        - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION}
+        - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI}
+        - FIREBASE_SERVICE_ACCOUNT_PATH=/app/credentials/service_account.json
     ports:
       - "8080:8080"
     volumes:
       - ./credentials:/app/credentials
     environment:
       - FIREBASE_SERVICE_ACCOUNT_PATH=/app/credentials/service_account.json
-      - INSTAGRAM_USER_ACCESS_TOKEN=${INSTAGRAM_USER_ACCESS_TOKEN:-default_token}
-      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-default_project}
-      - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
-      - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-True}
+      - INSTAGRAM_USER_ACCESS_TOKEN=${INSTAGRAM_USER_ACCESS_TOKEN}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION}
+      - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI}
     env_file:
       - .env.local 
