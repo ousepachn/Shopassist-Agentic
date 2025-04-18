@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Optional
 import logging
 from google import genai
 from google.genai.types import EmbedContentConfig
+import json
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -15,18 +17,93 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Get the project root directory
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
 
 class PineconeSync:
     def __init__(self, username: Optional[str] = None):
-        # Initialize Firebase
+        # Initialize Firebase with proper credential handling
         if not firebase_admin._apps:
-            cred = credentials.Certificate(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-            firebase_admin.initialize_app(cred)
+            # Check if we're in a Docker container
+            is_docker = os.path.exists("/.dockerenv")
+
+            # Define potential credential paths
+            creds_paths = [
+                # Docker container paths
+                "/app/credentials/service-account.json",
+                "/app/credentials/instagram-scraper-service-account.json",
+                # Local paths
+                os.path.join(PROJECT_ROOT, "credentials", "service-account.json"),
+                os.path.join(
+                    PROJECT_ROOT,
+                    "credentials",
+                    "instagram-scraper-service-account.json",
+                ),
+                # Environment variable path
+                os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+            ]
+
+            # Filter out empty paths
+            creds_paths = [p for p in creds_paths if p]
+
+            # Try to find a valid credential file
+            cred_path = None
+            for path in creds_paths:
+                if os.path.exists(path):
+                    cred_path = path
+                    logger.info(f"Using Firebase credentials from: {path}")
+                    break
+
+            if not cred_path:
+                if is_docker:
+                    logger.error(
+                        "Running in Docker but no service account credentials found."
+                    )
+                    logger.error("Please ensure one of the following files exists:")
+                    for path in creds_paths:
+                        logger.error(f"  - {path}")
+                    raise ValueError(
+                        "No Firebase credentials found in Docker environment"
+                    )
+                else:
+                    # For local development, try to use the environment variable
+                    cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+                    if cred_json:
+                        try:
+                            cred_dict = json.loads(cred_json)
+                            cred = credentials.Certificate(cred_dict)
+                            firebase_admin.initialize_app(cred)
+                            logger.info(
+                                "Firebase initialized with credentials from environment variable"
+                            )
+                        except json.JSONDecodeError as e:
+                            logger.error(
+                                f"Failed to parse FIREBASE_CREDENTIALS_JSON: {str(e)}"
+                            )
+                            raise ValueError("Invalid FIREBASE_CREDENTIALS_JSON format")
+                    else:
+                        logger.error(
+                            "No Firebase credentials found. Please set either a credential file or FIREBASE_CREDENTIALS_JSON"
+                        )
+                        raise ValueError("No Firebase credentials found")
+            else:
+                cred = credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+                logger.info(
+                    f"Firebase initialized with credentials from file: {cred_path}"
+                )
+
         self.db = firestore.client()
         self.username = username
 
         # Initialize Pinecone
-        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        pinecone_api_key = os.getenv("PINECONE_API_KEY")
+        if not pinecone_api_key:
+            logger.error("PINECONE_API_KEY not found in environment variables")
+            raise ValueError("PINECONE_API_KEY not found in environment variables")
+
+        pc = Pinecone(api_key=pinecone_api_key)
         self.index_name = os.getenv("PINECONE_INDEX_NAME", "shopassist-v2")
 
         # Create index if it doesn't exist
@@ -54,13 +131,43 @@ class PineconeSync:
 
         self.index = pc.Index(self.index_name)
 
-        # Initialize Google AI client
-        os.environ["GOOGLE_CLOUD_PROJECT"] = os.getenv("FIREBASE_PROJECT_ID")
+        # Initialize Google AI client with proper project ID handling
+        project_id = os.getenv("FIREBASE_PROJECT_ID")
+        if not project_id:
+            # Try to get project ID from service account file
+            for path in creds_paths:
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r") as f:
+                            creds_data = json.load(f)
+                            if "project_id" in creds_data:
+                                project_id = creds_data["project_id"]
+                                logger.info(
+                                    f"Using project ID from service account: {project_id}"
+                                )
+                                break
+                    except (json.JSONDecodeError, IOError) as e:
+                        logger.warning(
+                            f"Error reading credentials file {path}: {str(e)}"
+                        )
+
+            if not project_id:
+                logger.error("Could not determine Google Cloud project ID")
+                raise ValueError("Could not determine Google Cloud project ID")
+
+        os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
         os.environ["GOOGLE_CLOUD_LOCATION"] = os.getenv(
             "GOOGLE_CLOUD_LOCATION", "us-central1"
         )
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
-        self.genai_client = genai.Client()
+
+        # Initialize Google AI client
+        try:
+            self.genai_client = genai.Client()
+            logger.info(f"Google AI client initialized with project: {project_id}")
+        except Exception as e:
+            logger.error(f"Error initializing Google AI client: {str(e)}")
+            raise
 
     def get_firebase_data(self) -> List[Dict[str, Any]]:
         """Fetch data from Firebase that needs to be synced."""
