@@ -19,6 +19,7 @@ import httpx
 from google.cloud import aiplatform
 from vertexai.generative_models import GenerativeModel, Part
 import asyncio
+from backend.services.pinecone_sync import run_sync_job
 
 # Configure logging
 logging.basicConfig(
@@ -142,6 +143,17 @@ class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
     instagram_recipient_id: str
+
+
+class SyncRequest(BaseModel):
+    username: Optional[str] = None
+
+
+class SyncStatus(BaseModel):
+    status: str
+    message: Optional[str] = None
+    error: Optional[str] = None
+    username: Optional[str] = None
 
 
 def check_gcloud_auth():
@@ -1376,6 +1388,105 @@ async def search_posts(request: SearchRequest):
 
     except Exception as e:
         logger.error(f"Error searching posts: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sync-pinecone")
+async def sync_pinecone(request: SyncRequest, background_tasks: BackgroundTasks):
+    """
+    Manually trigger a Pinecone sync for either a specific username or all usernames.
+
+    Args:
+        request: SyncRequest containing an optional username
+
+    Returns:
+        A message indicating that the sync has been started
+    """
+    try:
+        logger.info(
+            f"Starting Pinecone sync for username: {request.username if request.username else 'all'}"
+        )
+
+        # Initialize status in Firestore
+        doc_ref = db.collection("sync_status").document("pinecone_sync")
+        doc_ref.set(
+            {
+                "status": "initializing",
+                "timestamp": firestore.SERVER_TIMESTAMP,
+                "message": f"Starting Pinecone sync for {'username: ' + request.username if request.username else 'all usernames'}",
+                "username": request.username if request.username else "all",
+            }
+        )
+
+        # Start sync in background
+        def process_sync():
+            try:
+                # Run the sync job
+                run_sync_job(username=request.username)
+
+                # Update status to completed
+                doc_ref.update(
+                    {
+                        "status": "completed",
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "message": f"Successfully completed Pinecone sync for {'username: ' + request.username if request.username else 'all usernames'}",
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Error during Pinecone sync: {str(e)}")
+                logger.error(traceback.format_exc())
+                doc_ref.update(
+                    {
+                        "status": "failed",
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "error": str(e),
+                    }
+                )
+
+        # Start background task
+        background_tasks.add_task(process_sync)
+
+        return {
+            "message": "Pinecone sync started",
+            "username": request.username if request.username else "all",
+        }
+
+    except Exception as e:
+        logger.error(f"Error in sync_pinecone endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sync-status")
+async def get_sync_status():
+    """
+    Get the status of the most recent Pinecone sync.
+
+    Returns:
+        The status of the most recent sync
+    """
+    try:
+        # Get the sync status document
+        doc_ref = db.collection("sync_status").document("pinecone_sync")
+        doc = doc_ref.get()
+
+        if not doc.exists:
+            return SyncStatus(
+                status="not_started",
+                message="No sync has been started yet",
+            )
+
+        data = doc.to_dict()
+        return SyncStatus(
+            status=data.get("status", "unknown"),
+            message=data.get("message"),
+            error=data.get("error"),
+            username=data.get("username"),
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting sync status: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 

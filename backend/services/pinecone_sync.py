@@ -155,16 +155,26 @@ class PineconeSync:
                 logger.error("Could not determine Google Cloud project ID")
                 raise ValueError("Could not determine Google Cloud project ID")
 
-        os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
-        os.environ["GOOGLE_CLOUD_LOCATION"] = os.getenv(
-            "GOOGLE_CLOUD_LOCATION", "us-central1"
-        )
-        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
+        # Get Google Cloud configuration from environment variables
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        use_vertexai = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "True").lower() == "true"
 
-        # Initialize Google AI client
+        # Initialize the Google AI client with environment variables
         try:
-            self.genai_client = genai.Client()
-            logger.info(f"Google AI client initialized with project: {project_id}")
+            if use_vertexai:
+                logger.info(
+                    f"Initializing Google AI client with Vertex AI (project: {project_id}, location: {location})"
+                )
+                self.genai_client = genai.Client(
+                    project=project_id, location=location, vertexai=True
+                )
+            else:
+                logger.info(
+                    f"Initializing Google AI client without Vertex AI (project: {project_id}, location: {location})"
+                )
+                self.genai_client = genai.Client(project=project_id, location=location)
+
+            logger.info(f"Google AI client initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing Google AI client: {str(e)}")
             raise
@@ -212,6 +222,32 @@ class PineconeSync:
         try:
             logger.info(f"Creating embeddings for {len(texts)} texts")
 
+            # Check if genai_client is initialized
+            if not hasattr(self, "genai_client") or self.genai_client is None:
+                # Re-initialize the Google AI client
+                project_id = os.getenv("FIREBASE_PROJECT_ID")
+                location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+                use_vertexai = (
+                    os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "True").lower() == "true"
+                )
+
+                if use_vertexai:
+                    logger.info(
+                        f"Re-initializing Google AI client with Vertex AI (project: {project_id}, location: {location})"
+                    )
+                    self.genai_client = genai.Client(
+                        project=project_id, location=location, vertexai=True
+                    )
+                else:
+                    logger.info(
+                        f"Re-initializing Google AI client without Vertex AI (project: {project_id}, location: {location})"
+                    )
+                    self.genai_client = genai.Client(
+                        project=project_id, location=location
+                    )
+
+                logger.info("Google AI client re-initialized successfully")
+
             # Get embeddings using text-embedding-005 model
             response = self.genai_client.models.embed_content(
                 model="text-embedding-005",
@@ -224,7 +260,8 @@ class PineconeSync:
 
             # Extract embedding values from response
             embeddings = [embedding.values for embedding in response.embeddings]
-            logger.info(f"Successfully created {len(embeddings)} embeddings")
+
+            logger.info(f"Successfully created embeddings for {len(texts)} texts")
             return embeddings
         except Exception as e:
             logger.error(f"Error creating embeddings: {str(e)}")
