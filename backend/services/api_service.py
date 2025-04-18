@@ -41,101 +41,51 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 firebase_creds_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
 firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
 
-# Try to initialize Firebase with credentials
-try:
-    if firebase_creds_json:
-        # Use credentials from environment variable
-        try:
-            cred_dict = json.loads(firebase_creds_json)
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            logger.info(
-                "Firebase initialized with credentials from environment variable"
-            )
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse FIREBASE_CREDENTIALS_JSON: {str(e)}")
-            raise ValueError("Invalid FIREBASE_CREDENTIALS_JSON format")
-    elif firebase_creds_path:
-        # Fall back to file-based credentials
-        if not os.path.isabs(firebase_creds_path):
-            firebase_creds_path = str(PROJECT_ROOT / firebase_creds_path)
+# Check for credentials in Docker container's /credentials folder
+docker_creds_path = "/app/credentials/firebase-credentials.json"
+if os.path.exists(docker_creds_path):
+    logger.info(
+        f"Using Firebase credentials from Docker container: {docker_creds_path}"
+    )
+    firebase_creds_path = docker_creds_path
 
-        if not os.path.exists(firebase_creds_path):
-            logger.error(
-                f"Firebase credentials file not found at: {firebase_creds_path}"
-            )
-            raise ValueError(
-                f"Firebase credentials file not found at: {firebase_creds_path}"
-            )
-
-        # Check if the file is empty
-        if os.path.getsize(firebase_creds_path) == 0:
-            logger.error(f"Firebase credentials file is empty: {firebase_creds_path}")
-            raise ValueError(
-                f"Firebase credentials file is empty: {firebase_creds_path}"
-            )
-
-        # Try to read the file and parse it as JSON first to catch any JSON errors
-        try:
-            with open(firebase_creds_path, "r") as f:
-                json.load(f)  # Just to validate JSON
-        except json.JSONDecodeError as e:
-            logger.error(f"Firebase credentials file contains invalid JSON: {str(e)}")
-            raise ValueError(
-                f"Firebase credentials file contains invalid JSON: {str(e)}"
-            )
-
-        # If we get here, the file exists and contains valid JSON
+if firebase_creds_json:
+    # Use credentials from environment variable
+    try:
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        logger.info("Firebase initialized with credentials from environment variable")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse FIREBASE_CREDENTIALS_JSON: {str(e)}")
+        raise ValueError("Invalid FIREBASE_CREDENTIALS_JSON format")
+elif firebase_creds_path:
+    # Fall back to file-based credentials
+    if not os.path.isabs(firebase_creds_path):
+        firebase_creds_path = str(PROJECT_ROOT / firebase_creds_path)
+    if not os.path.exists(firebase_creds_path):
+        logger.error(f"Firebase credentials file not found at: {firebase_creds_path}")
+        raise ValueError(
+            f"Firebase credentials file not found at: {firebase_creds_path}"
+        )
+    try:
         cred = credentials.Certificate(firebase_creds_path)
         firebase_admin.initialize_app(cred)
         db = firestore.client()
-        logger.info("Firebase initialized with credentials from file")
-    else:
-        # Check for credentials in the /credentials directory
-        credentials_dir = os.path.join(PROJECT_ROOT, "credentials")
-        if os.path.exists(credentials_dir):
-            # Look for any JSON file in the credentials directory
-            for file in os.listdir(credentials_dir):
-                if file.endswith(".json"):
-                    cred_path = os.path.join(credentials_dir, file)
-                    try:
-                        # Try to read the file and parse it as JSON
-                        with open(cred_path, "r") as f:
-                            json.load(f)  # Just to validate JSON
-
-                        # If we get here, the file contains valid JSON
-                        cred = credentials.Certificate(cred_path)
-                        firebase_admin.initialize_app(cred)
-                        db = firestore.client()
-                        logger.info(
-                            f"Firebase initialized with credentials from {cred_path}"
-                        )
-                        break
-                    except json.JSONDecodeError:
-                        logger.warning(f"Skipping invalid JSON file: {cred_path}")
-                    except Exception as e:
-                        logger.warning(
-                            f"Error with credentials file {cred_path}: {str(e)}"
-                        )
-            else:
-                # If we get here, no valid JSON file was found
-                logger.error(
-                    "No valid Firebase credentials found in credentials directory"
-                )
-                raise ValueError(
-                    "No valid Firebase credentials found in credentials directory"
-                )
-        else:
-            logger.error(
-                "No Firebase credentials found in environment variables or credentials directory"
-            )
-            raise ValueError(
-                "No Firebase credentials found. Please set either FIREBASE_CREDENTIALS_JSON or FIREBASE_SERVICE_ACCOUNT_PATH or place a valid JSON file in the credentials directory"
-            )
-except Exception as e:
-    logger.error(f"Error initializing Firebase: {str(e)}")
-    raise ValueError(f"Error initializing Firebase: {str(e)}")
+        logger.info(
+            f"Firebase initialized with credentials from file: {firebase_creds_path}"
+        )
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Firebase credentials file: {str(e)}")
+        raise ValueError(
+            f"Invalid Firebase credentials file format: {firebase_creds_path}"
+        )
+else:
+    logger.error("No Firebase credentials found in environment variables")
+    raise ValueError(
+        "No Firebase credentials found. Please set either FIREBASE_CREDENTIALS_JSON or FIREBASE_SERVICE_ACCOUNT_PATH"
+    )
 
 app = FastAPI()
 
